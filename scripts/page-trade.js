@@ -1223,9 +1223,14 @@
 
     // Resolve Jupiter's pending signTransaction as 'optimise' (throws into Jupiter's hook).
     // handlePendingDecision sets cooldown, clears pending* state, and calls renderWidgetPanel()
-    // which now renders the signing card (not Review & Sign). Safe no-op when no pending decision.
+    // which now renders the signing card (not Review & Sign).
+    // When autoAccept=true, pendingDecisionResolve was already consumed in the auto-accept
+    // decision block before signWidgetSwap() was called — in that case render directly so
+    // the user sees the signing card immediately instead of stale content during the re-fetch.
     if (ns.pendingDecisionResolve) {
       ns.handlePendingDecision('optimise');
+    } else {
+      ns.renderWidgetPanel();
     }
 
     // -- Step 2: Freeze snap values permanently ---------------------------------------------
@@ -1313,6 +1318,17 @@
 
     // -- Step 4: Re-enter 'signing' and render ----------------------------------------------
     ns.widgetSwapStatus = 'signing';
+    // Always make the widget visible before the wallet popup opens — mirrors the
+    // signing-original behavior so the "Approve in wallet" card is shown even if
+    // the user closed the widget during the pre-sign re-fetch (~1-2s for Raydium).
+    const _sw4 = document.getElementById('sr-widget');
+    if (_sw4) {
+      _sw4.style.display = '';
+      if (!_sw4.classList.contains('expanded')) _sw4.classList.add('expanded');
+      _sw4.classList.remove('compact');
+      ns.widgetActiveTab = 'monitor';
+      if (ns._fitBodyHeight) ns._fitBodyHeight(_sw4);
+    }
     ns.renderWidgetPanel();
 
     // -- Step 5: Capture signed order as local constants ------------------------------------
@@ -1529,8 +1545,13 @@
 
       if (!signedB64 && !skippedExecute && !_isRaydiumTx) throw new Error('Could not sign transaction ? make sure your wallet is connected and unlocked');
 
-      ns.widgetSwapStatus = 'sending';
-      ns.renderWidgetPanel();
+      // Raydium: 'sending' is set AFTER bundle signing inside the Raydium block below,
+      // so the 'signing' card stays visible until the user actually approves in their wallet.
+      // Jupiter: transition to 'sending' here — signedB64 is already in hand.
+      if (!_isRaydiumTx) {
+        ns.widgetSwapStatus = 'sending';
+        ns.renderWidgetPanel();
+      }
 
       let data;
       if (requestId) {
@@ -1823,6 +1844,11 @@
             } else {
               throw new Error('bundle: no Wallet Standard signTransaction or legacy signAllTransactions available');
             }
+
+            // Wallet approved — transition to 'sending' so the widget shows
+            // "Broadcasting transaction…" during the Jito submission + poll (~3-10s).
+            ns.widgetSwapStatus = 'sending';
+            ns.renderWidgetPanel();
 
             // -- Encode signed txs as base64 for Jito ----------------------------------
             const _bundleB64 = _signedAll.map(raw => {

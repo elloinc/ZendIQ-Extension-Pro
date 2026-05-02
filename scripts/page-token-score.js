@@ -227,25 +227,20 @@
   // slot (min slot) transaction count acts as a reliable bundle proxy.
   // Returns inconclusive for tokens with > 2 000 transactions (established tokens where
   // bundle detection is moot anyway).
+  // Single-page fetch used in Phase 1 (fast, inside Promise.all).
+  // Returns { inconclusive: true, _page1: sigs } when the page is full so
+  // Phase 2 can fire the second-page follow-up without re-fetching page 1.
   async function _fetchBundleLaunch(mint) {
     try {
-      let allSigs = [];
-      let cursor;
-      for (let page = 0; page < 2; page++) {
-        const params = [mint, cursor ? { limit: 1000, before: cursor } : { limit: 1000 }];
-        const resp  = await ns.rpcCall('getSignaturesForAddress', params);
-        const batch = resp?.result ?? [];
-        if (!batch.length) break;
-        allSigs = allSigs.concat(batch);
-        if (batch.length < 1000) break; // reached the beginning of history
-        cursor = batch[batch.length - 1].signature;
-      }
+      const resp1   = await ns.rpcCall('getSignaturesForAddress', [mint, { limit: 1000 }]);
+      const allSigs = resp1?.result ?? [];
 
       if (!allSigs.length) return null;
 
-      // If still full after 2 pages the token has > 2 000 txs — creation slot unknown
-      if (allSigs.length >= 2000) {
-        return { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true };
+      // Page is full — creation slot is on an older page; return inconclusive
+      // with the page-1 sigs attached so Phase 2 can continue from here.
+      if (allSigs.length >= 1000) {
+        return { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true, _page1: allSigs };
       }
 
       const valid = allSigs.filter(s => s.slot && !s.err);
@@ -919,23 +914,29 @@
     }
 
     try {
-      // Parallel fetch — on-chain + RugCheck + DexScreener + GeckoTerminal + bundle detection
-      const [mintInfo, holderData, rugCheck, dexData, geckoData, bundleLaunchData] = await Promise.all([
-        _fetchMintInfo(mint).catch(() => null),
-        _fetchHolderData(mint).catch(() => null),
-        _fetchRugCheck(mint).catch(() => null),
-        _fetchDexScreener(mint).catch(() => null),
-        _fetchGeckoTerminal(mint).catch(() => null),
-        _fetchBundleLaunch(mint).catch(() => null),
+      // Helper: cap any fetch at ms ms; returns null on timeout (same as a network error).
+      const _t = (p, ms = 4000) => Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
+
+      // On pump.fun, GeckoTerminal is always empty (tokens < 30 days old, all guards fail)
+      // and each request goes through the background bridge (up to 15s timeout each).
+      // Skip it entirely to keep Phase 1 under 1s on pump.fun.
+      const _isPump = window.location.hostname?.includes('pump.fun');
+
+      // Phase 1: parallel fetch — on-chain + RugCheck + DexScreener + (optionally) GeckoTerminal.
+      // Bundle detection excluded — requires 1-2 slow RPC pages, deferred to Phase 2.
+      const [mintInfo, holderData, rugCheck, dexData, geckoData] = await Promise.all([
+        _t(_fetchMintInfo(mint)),
+        _t(_fetchHolderData(mint)),
+        _t(_fetchRugCheck(mint)),
+        _t(_fetchDexScreener(mint)),
+        _isPump ? Promise.resolve(null) : _t(_fetchGeckoTerminal(mint)),
       ]);
 
-      // Phase 1: publish 12-signal partial result immediately so the widget shows real
-      // risk factors within ~1s while the slower deployer RPC lookup runs in background.
-      const _partial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, bundleLaunchData);
-      _partial.factors.push({ name: 'Creator history — scanning on-chain…', severity: 'LOW', detail: 'Checking how many tokens this wallet has deployed and how many went to zero.' });
+      // Phase 1: publish result immediately — bundle + deployer still pending.
+      const _partial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, null);
+      _partial.factors.push({ name: 'Bundle check — scanning on-chain…', severity: 'LOW', _pending: true, detail: 'Checking whether multiple wallets bought in the token\'s creation block (Jito bundle rug pattern).' });
+      _partial.factors.push({ name: 'Creator history — scanning on-chain…', severity: 'LOW', _pending: true, detail: 'Checking how many tokens this wallet has deployed and how many went to zero.' });
       _partial._deployerPending = true;
-      // Guard: only update UI if this mint is still relevant.
-      // Checks Jupiter trade context, Jupiter live quote, and pump.fun context.
       const _currentMint = () =>
         ns.widgetCapturedTrade?.outputMint ??
         ns.jupiterLiveQuote?.outputMint ??
@@ -947,9 +948,47 @@
         try { ns.renderWidgetPanel?.(); } catch (_) {}
       }
 
-      // Phase 2: deployer lookup — best-effort; does not block the Phase 1 result.
+      // Phase 2: bundle detection + deployer lookup — deferred so Phase 1 renders fast.
       let deployerData = null;
       let rugRateData  = null;
+      let bundleFinal  = null;
+      try {
+        // Full bundle fetch: page 1, then page 2 if needed.
+        bundleFinal = await _fetchBundleLaunch(mint).catch(() => null);
+        if (bundleFinal?.inconclusive && bundleFinal._page1?.length >= 1000) {
+          const lastSig = bundleFinal._page1[bundleFinal._page1.length - 1]?.signature;
+          if (lastSig) {
+            const resp2 = await ns.rpcCall('getSignaturesForAddress', [mint, { limit: 1000, before: lastSig }]).catch(() => null);
+            const page2 = resp2?.result ?? [];
+            if (page2.length < 1000) {
+              const allSigs = bundleFinal._page1.concat(page2);
+              const valid = allSigs.filter(s => s.slot && !s.err);
+              if (valid.length) {
+                let creationSlot = valid[0].slot;
+                for (const s of valid) if (s.slot < creationSlot) creationSlot = s.slot;
+                const txCount = valid.filter(s => s.slot === creationSlot).length;
+                bundleFinal = { bundleLevel: txCount >= 5 ? 'high' : txCount >= 3 ? 'medium' : 'low', creationSlotTxCount: txCount, inconclusive: false };
+              }
+            }
+            // page2 also full (≥2000 total) → stay inconclusive
+          }
+        }
+        // If fetch failed (null), show inconclusive so the pending row doesn't just vanish.
+        if (bundleFinal === null) bundleFinal = { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true };
+      } catch (_) {
+        bundleFinal = { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true };
+      }
+
+      // Publish bundle result immediately — don't wait for the slower deployer lookup.
+      // Replaces the "Bundle check — scanning…" spinner row with the real verdict.
+      if (_currentMint() === mint) {
+        const _bundlePartial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, bundleFinal);
+        _bundlePartial.factors.push({ name: 'Creator history — scanning on-chain…', severity: 'LOW', _pending: true, detail: 'Checking how many tokens this wallet has deployed and how many went to zero.' });
+        _bundlePartial._deployerPending = true;
+        ns.tokenScoreResult = _bundlePartial;
+        try { ns.renderWidgetPanel?.(); } catch (_) {}
+      }
+
       try {
         const address = await _getRealDeployer(mint);
         if (address) {
@@ -959,7 +998,7 @@
         }
       } catch (_) { /* deployer lookup is best-effort */ }
 
-      const result = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, deployerData, rugRateData, bundleLaunchData);
+      const result = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, deployerData, rugRateData, bundleFinal);
       _setCached(mint, result);
 
       // Re-check mint relevance — user may have switched tokens during the 5–10s deployer lookup

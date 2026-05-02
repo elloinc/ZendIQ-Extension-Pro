@@ -226,18 +226,41 @@
     };
     const SEV_ORDER_TOK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 
+    const SEV_PILL_TOK = { LOW: 'LOW', MEDIUM: 'MOD', HIGH: 'HIGH', CRITICAL: 'CRIT' };
+
+    // ── Shared spinner for all "Scanning…" states ─────────────────────────────
+    // Injected once into the page so the @keyframes is available everywhere.
+    if (!document.getElementById('sr-spin-style')) {
+      const _ss = document.createElement('style');
+      _ss.id = 'sr-spin-style';
+      _ss.textContent = '@keyframes sr-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+      document.head.appendChild(_ss);
+    }
+    const _SPINNER = `<span style="display:inline-block;width:11px;height:11px;border:2px solid rgba(255,181,71,0.25);border-top-color:#FFB547;border-radius:50%;animation:sr-spin 0.8s linear infinite;vertical-align:middle;margin-right:5px"></span>`;
+    const _SCAN_BADGE  = `<span style="display:flex;align-items:center;font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:#FFB547">${_SPINNER}Scanning…</span>`;
+    const _SCAN_ROWS   = `<div style="margin-top:6px;font-size:12px;color:#C2C2D4;font-style:italic;display:flex;align-items:center">${_SPINNER}Scanning token…</div>`;
     const _factorRows = (factors, showSimple) => {
-      if (showSimple || !factors?.length) return '';
+      if (!factors?.length) return '';
       const sorted = factors.slice().sort((a, b) => {
         const sd = (SEV_ORDER_TOK[a.severity] ?? 9) - (SEV_ORDER_TOK[b.severity] ?? 9);
         return sd !== 0 ? sd : _factorPriority(a.name) - _factorPriority(b.name);
       });
       return '<div style="margin-top:6px">' + sorted.map(f => {
-        const fc  = _rClr(f.severity);
-        const tip = (f.detail ?? '').replace(/"/g, '&quot;');
+        // Pending rows (bundle / deployer still fetching) — show spinner instead of icon+pill
+        if (f._pending) {
+          const tip = (f.detail ?? '').replace(/"/g, '&quot;');
+          return `<div style="display:flex;align-items:center;padding:4px 8px;background:rgba(0,0,0,0.25);border-left:2px solid rgba(255,181,71,0.35);border-radius:0 5px 5px 0;margin-bottom:3px;cursor:help" title="${tip}">` +
+            `${_SPINNER}<span style="font-size:12px;color:#C2C2D4;font-style:italic">${f.name}</span></div>`;
+        }
+        const fc   = _rClr(f.severity);
+        const pill = SEV_PILL_TOK[f.severity] ?? f.severity;
+        const icon = f.severity === 'LOW' ? '✓' : '⚠';
+        const iconClr = f.severity === 'LOW' ? '#14F195' : fc;
+        const tip  = (f.detail ?? '').replace(/"/g, '&quot;');
         return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:rgba(0,0,0,0.25);border-left:2px solid ${fc};border-radius:0 5px 5px 0;margin-bottom:3px;cursor:help" title="${tip}">` +
-          `<span style="font-size:12px;color:#C0C0D8">${f.name}</span>` +
-          `<span style="font-size:9px;font-weight:700;color:${fc};font-family:Space Mono,monospace">${f.severity}</span></div>`;
+          `<span style="font-size:11px;color:${iconClr};flex-shrink:0;width:14px;margin-right:4px">${icon}</span>` +
+          `<span style="font-size:12px;color:#C0C0D8;flex:1">${f.name}</span>` +
+          `<span style="font-size:9px;font-weight:700;color:${fc};font-family:Space Mono,monospace;margin-left:6px">${pill}</span></div>`;
       }).join('') + '</div>';
     };
 
@@ -265,14 +288,14 @@
       const tsc     = loaded ? _rClr(tokenScore.level) : '#FFB547';
       const badge   = loaded
         ? (isSimple ? _riskLabel(tokenScore.level) : `${tokenScore.level} \u00b7 ${tokenScore.score}/100`)
-        : 'Scanning\u2026';
-      const rows    = loaded ? _factorRows(tokenScore.factors, isSimple) : (isSimple ? '' : '<div style="margin-top:6px;font-size:12px;color:#C2C2D4;font-style:italic">Scanning token\u2026</div>');
+        : _SCAN_BADGE;
+      const rows    = loaded ? _factorRows(tokenScore.factors, isSimple) : _SCAN_ROWS;
       const divider = loaded && rows ? ';margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06)' : '';
       return `<div style="background:${tsc}11;border:1px solid ${tsc}44;border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help"
         title="Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW &lt;25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px${divider}">
           <span style="color:${tsc};font-weight:600">Token Risk Score</span>
-          <span style="font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:${tsc}">${badge}</span>
+          <span style="display:flex;align-items:center">${badge}</span>
         </div>${rows}
       </div>`;
     };
@@ -843,36 +866,22 @@
             const tsc      = tsLoaded
               ? ({CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'}[ts.level] ?? '#C2C2D4')
               : '#FFB547';
-            const tsBadge  = tsLoaded ? (ns.widgetMode === 'simple' ? _riskLabel(ts.level) : `${ts.level} \u00b7 ${ts.score}/100`) : 'Scanning\u2026';
+            const tsBadge  = tsLoaded ? (ns.widgetMode === 'simple' ? _riskLabel(ts.level) : `${ts.level} \u00b7 ${ts.score}/100`) : _SCAN_BADGE;
             const _tsTipFactors = tsLoaded && ts.factors?.length
               ? 'Factors:\u000a' + ts.factors.map(f =>
                   `\u2022 ${f.name} [${f.severity}]${f.detail ? ' \u2014 ' + f.detail.slice(0, 55) : ''}`
                 ).join('\u000a')
               : 'Scanning for rug risk, mint authority, supply concentration and RugCheck.xyz flags\u2026';
             const tsTip = `Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW <25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+ (higher = more risk)&#10;&#10;${_tsTipFactors}`;
-            // Card border/background reflect the score level — same visual language as Bot Attack Risk
             const _tsBg     = tsLoaded ? `background:${tsc}11;border:1px solid ${tsc}44` : 'background:rgba(255,181,71,0.05);border:1px solid rgba(255,181,71,0.25)';
             const _tsLblCol = tsLoaded ? tsc : '#FFB547';
-            // Factor rows rendered directly inside the card — advanced mode only.
-            // In simple mode the full factor list is still accessible via the hover tooltip.
-            const _tsFactorRows = (() => {
-              if (ns.widgetMode === 'simple') return '';
-              if (!tsLoaded || !ts.factors?.length) {
-                return '<div style="margin-top:6px;font-size:12px;color:#C2C2D4;font-style:italic;padding:2px 0">Scanning token\u2026</div>';
-              }
-              return '<div style="margin-top:8px">' + ts.factors.map(f => {
-                const fc = ({CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'})[f.severity] ?? '#C2C2D4';
-                const tip = f.detail ? f.detail.replace(/"/g, '&quot;') : '';
-                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:rgba(0,0,0,0.25);border-left:2px solid ' + fc + ';border-radius:0 5px 5px 0;margin-bottom:3px;cursor:help" title="' + tip + '">' +
-                    '<span style="font-size:12px;color:#C0C0D8">' + f.name + '</span>' +
-                    '<span style="font-size:9px;font-weight:700;color:' + fc + ';font-family:Space Mono,monospace;flex-shrink:0;margin-left:6px">' + f.severity + '</span>' +
-                  '</div>';
-              }).join('') + '</div>';
-            })();
+            const _tsFactorRows = tsLoaded && ts.factors?.length
+              ? _factorRows(ts.factors, false)
+              : _SCAN_ROWS;
             return `<div title="${tsTip}" style="${_tsBg};border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help">
               <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
                 <span style="color:${_tsLblCol};font-weight:600;cursor:help" title="ZendIQ checks the token you are receiving: mint authority (can devs print unlimited tokens?), freeze authority (can devs block your tokens?), top holder concentration, and RugCheck.xyz flags.">Token Risk Score</span>
-                <span style="font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:${tsc}">${tsBadge}</span>
+                <span style="display:flex;align-items:center">${tsBadge}</span>
               </div>
               ${_tsFactorRows}
             </div>`;
@@ -1680,7 +1689,9 @@
                   </div>
                   <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">
                     <span style="color:#C8C8D8;font-size:12px">Token Risk</span>
-                    <span style="color:${_tsL2 ? _sc(_tkLvl) : '#C2C2D4'};font-size:12px;font-weight:700;font-family:'Space Mono',monospace">${_tsL2 ? `${_tkLvl} \u00b7 ${_tkSc}/100` : 'scanning\u2026'}</span>
+                    ${_tsL2
+                      ? `<span style="color:${_sc(_tkLvl)};font-size:12px;font-weight:700;font-family:'Space Mono',monospace">${_tkLvl} \u00b7 ${_tkSc}/100</span>`
+                      : `<span style="display:flex;align-items:center;font-size:12px;color:#FFB547">${_SPINNER}scanning…</span>`}
                   </div>
                 </div>` : '';
               return `<div title="${_tip}" style="${_bg};border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:help">
@@ -1705,33 +1716,20 @@
               const tsLoaded = _ts && _ts.mint === _tsMint && _ts.loaded;
               const tsc      = tsLoaded ? (({CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'})[_ts.level] ?? '#C2C2D4') : '#FFB547';
               const _tsBg    = tsLoaded ? `background:${tsc}11;border:1px solid ${tsc}44` : 'background:rgba(255,181,71,0.05);border:1px solid rgba(255,181,71,0.25)';
-              const tsBadge  = tsLoaded ? (ns.widgetMode === 'simple' ? _riskLabel(_ts.level) : `${_ts.level} \u00b7 ${_ts.score}/100`) : 'Scanning\u2026';
+              const tsBadge  = tsLoaded ? (ns.widgetMode === 'simple' ? _riskLabel(_ts.level) : `${_ts.level} \u00b7 ${_ts.score}/100`) : _SCAN_BADGE;
               const _tsTipFactors = tsLoaded && _ts.factors?.length
                 ? 'Factors:\u000a' + _ts.factors.map(f => `\u2022 ${f.name} [${f.severity}]${f.detail ? ' \u2014 ' + f.detail.slice(0,55) : ''}`).join('\u000a')
                 : 'Scanning for rug risk, mint authority, supply concentration and RugCheck.xyz flags\u2026';
               const tsTip = `Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW <25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+ (higher = more risk)&#10;&#10;${_tsTipFactors}`;
 
-              // Factor rows — Advanced mode only
-              let _tsFactorRows = '';
-              if (ns.widgetMode !== 'simple') {
-                if (!tsLoaded || !_ts.factors?.length) {
-                  _tsFactorRows = '<div style="margin-top:6px;font-size:12px;color:#C2C2D4;font-style:italic;padding:2px 0">Scanning token\u2026</div>';
-                } else {
-                  _tsFactorRows = '<div style="margin-top:8px">' + _ts.factors.map(f => {
-                    const fc = ({CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'})[f.severity] ?? '#C2C2D4';
-                    const tip = f.detail ? f.detail.replace(/"/g, '&quot;') : '';
-                    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:rgba(0,0,0,0.25);border-left:2px solid ' + fc + ';border-radius:0 5px 5px 0;margin-bottom:3px;cursor:help" title="' + tip + '">' +
-                      '<span style="font-size:12px;color:#C0C0D8">' + f.name + '</span>' +
-                      '<span style="font-size:9px;font-weight:700;color:' + fc + ';font-family:Space Mono,monospace;flex-shrink:0;margin-left:6px">' + f.severity + '</span>' +
-                    '</div>';
-                  }).join('') + '</div>';
-                }
-              }
+              const _tsFactorRows = tsLoaded && _ts.factors?.length
+                ? _factorRows(_ts.factors, false)
+                : _SCAN_ROWS;
 
               return `<div title="${tsTip}" style="${_tsBg};border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help">
                 <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
                   <span style="color:${tsc};font-weight:600;cursor:help" title="ZendIQ checks the token you are receiving: mint authority (can devs print unlimited tokens?), freeze authority (can devs block your tokens?), top holder concentration, and RugCheck.xyz flags.">Token Risk Score</span>
-                  <span style="font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:${tsc}">${tsBadge}</span>
+                  <span style="display:flex;align-items:center">${tsBadge}</span>
                 </div>
                 ${_tsFactorRows}
               </div>`;

@@ -1211,7 +1211,10 @@
         // (i.e. the user initiates a swap).
         ns.lastOutputMint = m[1];
         if (m[1] !== ns._tokenScoreMint) {
-          ns._tokenScoreMint  = m[1];
+          // Reset to null (NOT to m[1]) so renderMonitor()'s dedup guard
+          // (mint !== _tokenScoreMint) evaluates to true and fetchTokenScore fires.
+          // Setting it to the mint here would permanently block the fetch.
+          ns._tokenScoreMint  = null;
           ns.tokenScoreResult = null;
         }
       }
@@ -1241,8 +1244,9 @@
         if (segs[0] && segs[0] !== ns.lastOutputMint) {
           ns.lastOutputMint = segs[0];
           // Track the mint but don't eagerly score — same policy as initPage().
+          // Reset to null (NOT to segs[0]) so renderMonitor()'s dedup guard fires.
           if (segs[0] !== ns._tokenScoreMint) {
-            ns._tokenScoreMint  = segs[0];
+            ns._tokenScoreMint  = null;
             ns.tokenScoreResult = null;
           }
         }
@@ -1563,6 +1567,17 @@
         risk:        pfRisk ?? null,
         tokenScore:  ns.tokenScoreResult ?? null,
       };
+
+      // Trigger token score fetch immediately on swap detection.
+      // page-interceptor.js misses this because p (window.__zendiq_last_order_params)
+      // is always null on pump.fun — there are no Jupiter /order ticks here.
+      const _pfOutMint = ns.pumpFunContext.outputMint;
+      if (_pfOutMint && ns.fetchTokenScore && _pfOutMint !== ns._tokenScoreMint) {
+        ns._tokenScoreMint  = _pfOutMint;
+        ns.tokenScoreResult = null;
+        ns.fetchTokenScore(_pfOutMint);
+      }
+
       ns.jupiterLiveQuote    = null;
       ns.widgetCapturedTrade = null;
       ns.widgetLastOrder     = null;
@@ -1914,7 +1929,7 @@
         if (!isSimp && mevR.factors?.length) {
           _botFactorRows = mevR.factors.map(f => {
             const fc = f.score >= 30 ? '#FF4D4D' : f.score >= 15 ? '#FFB547' : f.score >= 5 ? '#9945FF' : '#14F195';
-            return `<div style="display:flex;justify-content:space-between;padding:3px 8px;background:rgba(0,0,0,0.25);border-left:2px solid ${fc};border-radius:0 5px 5px 0;margin-bottom:3px"><span style="font-size:12px;color:#C0C0D8">${f.name}</span><span style="font-size:11px;font-weight:700;color:${fc};font-family:'Space Mono',monospace">${f.score}</span></div>`;
+            return `<div style="display:flex;justify-content:space-between;padding:3px 8px;background:rgba(0,0,0,0.25);border-left:2px solid ${fc};border-radius:0 5px 5px 0;margin-bottom:3px"><span style="font-size:12px;color:#C0C0D8">${f.factor}</span><span style="font-size:11px;font-weight:700;color:${fc};font-family:'Space Mono',monospace">${f.score}</span></div>`;
           }).join('');
         }
         const _hasBotDetail = !isSimp && (_estLossHtml || _botFactorRows);
@@ -1929,12 +1944,12 @@
       // ── Savings & Costs card ──
       const costsRows = _isDirectPath
         ? [
-            { label: 'Bot protection', value: 'Active \u00b7 0.5% enforced',        valueColor: '#14F195', tooltip: 'ZendIQ patches maxSolCost so your buy cannot be sandwiched beyond 0.5% slippage.' },
+            { label: 'Bot protection', value: `Active \u00b7 ${_ziqSl.toFixed(1)}% enforced`,        valueColor: '#14F195', tooltip: `ZendIQ patches maxSolCost so your buy cannot be sandwiched beyond ${_ziqSl.toFixed(1)}% slippage.` },
             { label: 'Jito bundle',    value: 'Skipped \u00b7 trade too small',      valueColor: '#6B6B8A', tooltip: `Max sandwich exposure (${_expSol} SOL) is smaller than the minimum Jito tip (${_minTipSol} SOL). Sending direct is more profitable.` },
             { label: 'ZendIQ Fee',     value: 'FREE \u00b7 Beta',                    valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
           ]
         : [
-            { label: 'Bot protection savings', value: savSol != null && savSol > 0.000001 ? `~${fmt(savSol)} SOL (${fmtU(savUsd)})` : '\u2014', valueColor: savSol != null && savSol > 0.000001 ? '#14F195' : '#9B9BAD', tooltip: `Maximum SOL bots can no longer extract once slippage is reduced from ${slip.toFixed(1)}% to 0.5%.` },
+            { label: 'Bot protection savings', value: savSol != null && savSol > 0.000001 ? `~${fmt(savSol)} SOL (${fmtU(savUsd)})` : '\u2014', valueColor: savSol != null && savSol > 0.000001 ? '#14F195' : '#9B9BAD', tooltip: `Maximum SOL bots can no longer extract once slippage is reduced from ${slip.toFixed(1)}% to ${_ziqSl.toFixed(1)}%.` },
             { label: 'Jito bundle tip',        value: `~${_tipSol} SOL (${fmtU(_tipUsd)})`, valueColor: '#9945FF', tooltip: 'Tip paid to Jito validators for atomic bundle inclusion. Always less than the sandwich exposure it protects.' },
             { label: 'ZendIQ Fee',             value: 'FREE \u00b7 Beta',                    valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
             { label: 'Est. Net Benefit',        value: savSol != null && (savSol - _tipLam / 1e9) > 0.000001 ? `~${fmt(Math.max(0, savSol - _tipLam / 1e9))} SOL` : '\u2248 none', valueColor: savSol != null && (savSol - _tipLam / 1e9) > 0.000001 ? '#14F195' : '#C2C2D4', tooltip: 'SOL saved from sandwich protection minus the Jito bundle tip.' },

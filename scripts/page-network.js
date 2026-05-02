@@ -694,7 +694,13 @@
           }
         }
       } catch (e) {
-        if (e?.message && !e.message.includes('Content-Security-Policy') && !e.message.includes('Failed to fetch')) {
+        // Silence expected non-error conditions:
+        //  - AbortError: site cancelled the fetch via AbortController (e.g. pump.fun nav)
+        //  - CSP / 'Failed to fetch': known cross-origin blocks
+        if (e?.name !== 'AbortError'
+            && e?.message
+            && !e.message.includes('Content-Security-Policy')
+            && !e.message.includes('Failed to fetch')) {
           console.warn('[ZendIQ] fetch interception error', e);
         }
         throw e; // always rethrow so callers receive a proper rejection, not undefined

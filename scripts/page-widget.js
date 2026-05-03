@@ -283,14 +283,24 @@
 
     // ── Card: Token Risk Score ────────────────────────────────────────────────
     // tokenScore: ns.tokenScoreResult or pfc.tokenScore (may be null / not yet loaded)
+    // Treat the card as "has data" whenever factors exist — even if `loaded` is
+    // momentarily false during a refresh — so the UI doesn't revert to the
+    // "Scanning…" spinner once a real score has been shown.
+    // Badge format matches ZendIQ Lite for consistency: "Critical Risk · 100/100"
+    // (no emoji, title case) in both simple and advanced modes.
+    const _TOK_LBL = { LOW: 'Low Risk', MEDIUM: 'Moderate Risk', HIGH: 'High Risk', CRITICAL: 'Critical Risk' };
     const _buildTokenRiskCard = (tokenScore, isSimple) => {
-      const loaded  = tokenScore?.loaded;
+      const hasData = tokenScore?.factors?.length > 0;
+      const loaded  = tokenScore?.loaded || hasData;
       const tsc     = loaded ? _rClr(tokenScore.level) : '#FFB547';
+      const lvlLbl  = loaded ? (_TOK_LBL[tokenScore.level] ?? tokenScore.level) : '';
       const badge   = loaded
-        ? (isSimple ? _riskLabel(tokenScore.level) : `${tokenScore.level} \u00b7 ${tokenScore.score}/100`)
+        ? `<span style="font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:${tsc}">${lvlLbl} \u00b7 ${tokenScore.score}/100</span>`
         : _SCAN_BADGE;
-      const rows    = loaded ? _factorRows(tokenScore.factors, isSimple) : _SCAN_ROWS;
-      const divider = loaded && rows ? ';margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06)' : '';
+      // Simple mode: show only the badge line (matches Bot Attack Risk / Overall Risk).
+      // Advanced mode: show the full factor breakdown.
+      const rows    = isSimple ? '' : (loaded ? _factorRows(tokenScore.factors, false) : _SCAN_ROWS);
+      const divider = !isSimple && loaded && rows ? ';margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06)' : '';
       return `<div style="background:${tsc}11;border:1px solid ${tsc}44;border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help"
         title="Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW &lt;25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px${divider}">
@@ -858,7 +868,7 @@
             if (!tsMint) return '';
             const ts = ns.tokenScoreResult;
             // Kick off a fresh fetch when the mint changes or result is absent
-            if ((!ts || ts.mint !== tsMint) && ns._tokenScoreMint !== tsMint && ns.fetchTokenScore) {
+            if ((!ts || ts.mint !== tsMint) && ns._tokenScoreMint !== tsMint && !ns._tokenScoreInFlight && ns.fetchTokenScore) {
               ns._tokenScoreMint = tsMint;
               ns.fetchTokenScore(tsMint, tsSym);
             }
@@ -1709,14 +1719,18 @@
               const _tsMint = ct.outputMint ?? null;
               if (!_tsMint) return '';
               // Trigger async score fetch if result is absent or stale
-              if ((!_ts || _ts.mint !== _tsMint) && ns._tokenScoreMint !== _tsMint && ns.fetchTokenScore) {
+              if ((!_ts || _ts.mint !== _tsMint) && ns._tokenScoreMint !== _tsMint && !ns._tokenScoreInFlight && ns.fetchTokenScore) {
                 ns._tokenScoreMint = _tsMint;
                 ns.fetchTokenScore(_tsMint, ct.outputSymbol);
               }
               const tsLoaded = _ts && _ts.mint === _tsMint && _ts.loaded;
               const tsc      = tsLoaded ? (({CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'})[_ts.level] ?? '#C2C2D4') : '#FFB547';
               const _tsBg    = tsLoaded ? `background:${tsc}11;border:1px solid ${tsc}44` : 'background:rgba(255,181,71,0.05);border:1px solid rgba(255,181,71,0.25)';
-              const tsBadge  = tsLoaded ? (ns.widgetMode === 'simple' ? _riskLabel(_ts.level) : `${_ts.level} \u00b7 ${_ts.score}/100`) : _SCAN_BADGE;
+              // Match ZendIQ Lite badge format: "Critical Risk · 100/100" (no emoji, title case)
+              const _tsLvlLbl = tsLoaded ? (_TOK_LBL[_ts.level] ?? _ts.level) : '';
+              const tsBadge  = tsLoaded
+                ? `<span style="font-weight:700;font-size:12px;font-family:'Space Mono',monospace;color:${tsc}">${_tsLvlLbl} \u00b7 ${_ts.score}/100</span>`
+                : _SCAN_BADGE;
               const _tsTipFactors = tsLoaded && _ts.factors?.length
                 ? 'Factors:\u000a' + _ts.factors.map(f => `\u2022 ${f.name} [${f.severity}]${f.detail ? ' \u2014 ' + f.detail.slice(0,55) : ''}`).join('\u000a')
                 : 'Scanning for rug risk, mint authority, supply concentration and RugCheck.xyz flags\u2026';

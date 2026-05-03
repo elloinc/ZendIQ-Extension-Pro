@@ -348,6 +348,8 @@
       const tsLoaded = score?.loaded && score?.mint === outM;
       const tsLv     = tsLoaded ? score.level : null;
       const tsColor  = tsLv === 'CRITICAL' ? '#FF4444' : tsLv === 'HIGH' ? '#FF6B00' : tsLv === 'MEDIUM' ? '#FFB547' : '#14F195';
+      // Lite-style label for consistency across all 3 sites: "Critical Risk · 100/100"
+      const tsLbl    = ({ LOW: 'Low Risk', MEDIUM: 'Moderate Risk', HIGH: 'High Risk', CRITICAL: 'Critical Risk' })[tsLv] ?? tsLv;
 
       return `
         <div style="padding:14px 16px">
@@ -361,7 +363,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;
                       background:rgba(255,255,255,0.04);border-radius:8px;padding:8px 10px">
             <span style="font-size:13px;color:#C2C2D4">Token Risk</span>
-            <span style="font-size:13px;font-weight:700;color:${tsColor}">${tsLv} &middot; ${score.score}/100</span>
+            <span style="font-size:13px;font-weight:700;color:${tsColor}">${tsLbl} &middot; ${score.score}/100</span>
           </div>` : outM ? `
           <div style="font-size:12px;color:#9B9BAD;text-align:center;padding:4px 0">
             Scanning token risk&hellip;

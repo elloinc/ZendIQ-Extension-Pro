@@ -1243,11 +1243,16 @@
           .filter(s => s.length >= 32 && s.length <= 50 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(s));
         if (segs[0] && segs[0] !== ns.lastOutputMint) {
           ns.lastOutputMint = segs[0];
-          // Track the mint but don't eagerly score — same policy as initPage().
-          // Reset to null (NOT to segs[0]) so renderMonitor()'s dedup guard fires.
-          if (segs[0] !== ns._tokenScoreMint) {
-            ns._tokenScoreMint  = null;
-            ns.tokenScoreResult = null;
+          // Don't disrupt an in-progress swap review: pump.fun fetches trade feeds
+          // for OTHER tokens in the background (trending sidebar, etc.), which would
+          // incorrectly clear _tokenScoreMint and restart the token risk scan loop.
+          if (!ns.pumpFunContext) {
+            // Track the mint but don't eagerly score — same policy as initPage().
+            // Reset to null (NOT to segs[0]) so renderMonitor()'s dedup guard fires.
+            if (segs[0] !== ns._tokenScoreMint) {
+              ns._tokenScoreMint  = null;
+              ns.tokenScoreResult = null;
+            }
           }
         }
         // Capture the user's intended SOL amount from the API request body.
@@ -1747,13 +1752,14 @@
       const slip = pfc.slippagePct ?? 1;
       const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, Math.max(0.5, slip));
       const solP = ns.widgetLastPriceData?.solPriceUsd ?? 80;
-      const ts   = (ns.tokenScoreResult?.mint === pfc.outputMint && ns.tokenScoreResult?.loaded)
+      const ts   = (ns.tokenScoreResult?.mint === pfc.outputMint &&
+                    (ns.tokenScoreResult?.loaded || ns.tokenScoreResult?.factors?.length))
         ? ns.tokenScoreResult : pfc.tokenScore;
       const risk = ns.lastRiskResult ?? pfc.risk;
       const isAdv = ns.widgetMode !== 'simple';
 
       // Trigger async token score fetch if not yet loaded
-      if (!ts?.loaded && ns._tokenScoreMint !== pfc.outputMint && ns.fetchTokenScore) {
+      if (!ts?.loaded && !ts?.factors?.length && ns._tokenScoreMint !== pfc.outputMint && !ns._tokenScoreInFlight && ns.fetchTokenScore) {
         ns._tokenScoreMint = pfc.outputMint;
         ns.fetchTokenScore(pfc.outputMint);
       }
@@ -1845,7 +1851,8 @@
       const solP   = ns.widgetLastPriceData?.solPriceUsd ?? 80;
       const pfRisk = ns.lastRiskResult ?? pfc.risk;
       const mevR   = pfRisk?.mev ?? null;
-      const pfTs   = (ns.tokenScoreResult?.mint === pfc.outputMint && ns.tokenScoreResult?.loaded)
+      const pfTs   = (ns.tokenScoreResult?.mint === pfc.outputMint &&
+                      (ns.tokenScoreResult?.loaded || ns.tokenScoreResult?.factors?.length))
         ? ns.tokenScoreResult : pfc.tokenScore;
       const isSimp = ns.widgetMode === 'simple';
 

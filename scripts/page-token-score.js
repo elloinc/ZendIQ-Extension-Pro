@@ -902,6 +902,21 @@
       return cached;
     }
 
+    // In-flight guard — prevent concurrent duplicate scans for the same mint.
+    // This can happen when renderMonitor() re-triggers fetchTokenScore after an
+    // external reset (e.g. pump.fun background API calls clearing _tokenScoreMint).
+    if (ns._tokenScoreInFlight === mint) return ns.tokenScoreResult ?? null;
+
+    // Idempotency guard: if we already have a fully loaded result for this mint
+    // (e.g. Phase 2a finished and a re-trigger fired), just re-publish + return
+    // without overwriting. Prevents a brief revert to the "Scanning…" spinner.
+    if (ns.tokenScoreResult?.mint === mint && ns.tokenScoreResult?.loaded) {
+      try { ns.renderWidgetPanel?.(); } catch (_) {}
+      return ns.tokenScoreResult;
+    }
+
+    ns._tokenScoreInFlight = mint;
+
     // Mark in-progress so widget shows "Scanning…". If we have a last-known
     // result for this mint, show that as a fallback while the fresh fetch runs.
     const lastKnown = _getLastKnown(mint);
@@ -947,18 +962,27 @@
         ns.tokenScoreResult = _partial;
         try { ns.renderWidgetPanel?.(); } catch (_) {}
       }
+      // Cache the partial as last-known so any outer-catch fallback gets a
+      // loaded result (not a "Scanning…" spinner) if Phase 2 throws later.
+      _setCached(mint, _partial);
 
       // Phase 2: bundle detection + deployer lookup — deferred so Phase 1 renders fast.
+      // Hard cap each fetch so a slow/hung RPC can't leave the pending rows on screen forever.
+      const _t2 = (p, ms) => Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
+      // Phase 2 publishes are bound to *this* in-flight scan, not the live mint.
+      // The user's mint can flicker (pumpFunContext nulled briefly during async ticks),
+      // but as long as we're still the active scan for `mint`, our Phase 2a/2b results are valid.
+      const _stillActive = () => ns._tokenScoreInFlight === mint || _currentMint() === mint;
       let deployerData = null;
       let rugRateData  = null;
       let bundleFinal  = null;
       try {
-        // Full bundle fetch: page 1, then page 2 if needed.
-        bundleFinal = await _fetchBundleLaunch(mint).catch(() => null);
+        // Full bundle fetch: page 1 (6s cap), then page 2 if needed (6s cap).
+        bundleFinal = await _t2(_fetchBundleLaunch(mint), 6000);
         if (bundleFinal?.inconclusive && bundleFinal._page1?.length >= 1000) {
           const lastSig = bundleFinal._page1[bundleFinal._page1.length - 1]?.signature;
           if (lastSig) {
-            const resp2 = await ns.rpcCall('getSignaturesForAddress', [mint, { limit: 1000, before: lastSig }]).catch(() => null);
+            const resp2 = await _t2(ns.rpcCall('getSignaturesForAddress', [mint, { limit: 1000, before: lastSig }]), 6000);
             const page2 = resp2?.result ?? [];
             if (page2.length < 1000) {
               const allSigs = bundleFinal._page1.concat(page2);
@@ -973,7 +997,7 @@
             // page2 also full (≥2000 total) → stay inconclusive
           }
         }
-        // If fetch failed (null), show inconclusive so the pending row doesn't just vanish.
+        // If fetch failed/timed out (null), show inconclusive so the pending row doesn't just vanish.
         if (bundleFinal === null) bundleFinal = { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true };
       } catch (_) {
         bundleFinal = { bundleLevel: 'unknown', creationSlotTxCount: null, inconclusive: true };
@@ -981,33 +1005,55 @@
 
       // Publish bundle result immediately — don't wait for the slower deployer lookup.
       // Replaces the "Bundle check — scanning…" spinner row with the real verdict.
-      if (_currentMint() === mint) {
-        const _bundlePartial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, bundleFinal);
-        _bundlePartial.factors.push({ name: 'Creator history — scanning on-chain…', severity: 'LOW', _pending: true, detail: 'Checking how many tokens this wallet has deployed and how many went to zero.' });
-        _bundlePartial._deployerPending = true;
+      const _bundlePartial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, bundleFinal);
+      _bundlePartial.factors.push({ name: 'Creator history — scanning on-chain…', severity: 'LOW', _pending: true, detail: 'Checking how many tokens this wallet has deployed and how many went to zero.' });
+      _bundlePartial._deployerPending = true;
+      if (_stillActive()) {
         ns.tokenScoreResult = _bundlePartial;
         try { ns.renderWidgetPanel?.(); } catch (_) {}
       }
+      // Cache bundle-intermediate as last-known so the outer catch falls back
+      // to it (loaded:true) if the deployer phase or _computeScore throws.
+      _setCached(mint, _bundlePartial);
 
+      // Phase 2b: deployer lookup with 8s ceiling so the pending row can't hang.
+      let deployerFailed = false;
       try {
-        const address = await _getRealDeployer(mint);
+        const address = await _t2(_getRealDeployer(mint), 8000);
         if (address) {
-          const td     = await _getDeployerTokenData(address, 30);
-          deployerData = { address, tokenCount: td.tokenCount };
-          if (td.mints.length >= 3) rugRateData = await _fetchDeployerRugRate(td.mints);
+          const td = await _t2(_getDeployerTokenData(address, 30), 6000);
+          if (td) {
+            deployerData = { address, tokenCount: td.tokenCount };
+            if (td.mints?.length >= 3) rugRateData = await _t2(_fetchDeployerRugRate(td.mints), 6000);
+          } else {
+            deployerFailed = true;
+          }
+        } else {
+          deployerFailed = true;
         }
-      } catch (_) { /* deployer lookup is best-effort */ }
+      } catch (_) { deployerFailed = true; }
 
       const result = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, deployerData, rugRateData, bundleFinal);
+      // If deployer lookup failed/timed out, _computeScore won't push a creator-history row.
+      // Add an explicit "unavailable" row so the pending spinner is replaced (not left hanging).
+      if (deployerFailed && !deployerData) {
+        result.factors.push({
+          name: 'Creator history: unavailable',
+          severity: 'LOW',
+          detail: 'On-chain deployer lookup timed out or returned no data — unable to assess creator track record.',
+        });
+      }
       _setCached(mint, result);
+      ns._tokenScoreInFlight = null;
 
       // Re-check mint relevance — user may have switched tokens during the 5–10s deployer lookup
-      if (_currentMint() === mint) {
+      if (_stillActive()) {
         ns.tokenScoreResult = result;
         try { ns.renderWidgetPanel?.(); } catch (_) {}
       }
       return result;
     } catch (err) {
+      ns._tokenScoreInFlight = null;
       // On any unexpected error, fall back to the last-known result for this mint
       // so the UI doesn't remain stuck on "Scanning…". If no fallback exists,
       // return an error-shaped result.

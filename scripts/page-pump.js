@@ -27,11 +27,15 @@
     'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
     '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
   ];
-  const _PUMP_TIP_FLOOR       = 50_000;   // 0.00005 SOL — minimum tip for any bundle attempt
-  const _PUMP_TIP_CAP         = 5_000_000; // 0.005 SOL  — maximum tip
-  const _PUMP_BUNDLE_MIN_SOL  = 0.005;     // skip bundle below this — sandwich exposure < floor
-  // Tip = 80% of expected sandwich exposure (0.5% slippage × trade), clamped to [floor, cap].
-  // This guarantees the user always nets a benefit: saves 100% of sandwich loss, pays 80% as tip.
+  const _PUMP_TIP_FLOOR       = 1_000_000;  // 0.001 SOL — pump.fun bundle minimum (verified: 500k fails, 1M lands)
+  const _PUMP_TIP_CAP         = 10_000_000; // 0.01 SOL  — maximum tip
+  // Tip = 80% of expected sandwich exposure (slippage × trade), clamped to [floor, cap].
+  // Bundle is only profitable when 80% of exposure ≥ floor → user nets ≥ 20% of exposure.
+  // Below that threshold the tip would exceed the protected loss (net-negative optimisation).
+  function _pumpBundleProfitable(solAmount, slipPct) {
+    const expLam = solAmount * 1e9 * slipPct / 100;
+    return (expLam * 0.8) >= _PUMP_TIP_FLOOR;
+  }
 
   // ── Parse pump.fun buy tx raw bytes → bonding curve + global accounts ───────
   // Accepts any serialized Solana tx (legacy or v0) and extracts the account
@@ -390,6 +394,40 @@
     }
   }
 
+  // ── Submit a 2-tx bundle [buyTx, tipTx] to Jito's /api/v1/bundles ────────
+  // Standard bundle path (sendBundle JSON-RPC). Races regional endpoints,
+  // first 200 wins. Returns { bundleId, endpoint } or { bundleId: null }.
+  async function _submitJitoBundle2tx(signedBuyBytes, signedTipBytes) {
+    const _toB64 = (b) => {
+      let s = '';
+      for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192));
+      return btoa(s);
+    };
+    const body = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'sendBundle',
+      params: [[_toB64(signedBuyBytes), _toB64(signedTipBytes)], { encoding: 'base64' }],
+    });
+    const endpoints = [
+      'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+      'https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles',
+      'https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles',
+      'https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles',
+      'https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles',
+      'https://london.mainnet.block-engine.jito.wtf/api/v1/bundles',
+    ];
+    const _try = async (url) => {
+      const r = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body, signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json();
+      if (d?.result) return { bundleId: d.result, endpoint: url.replace('/api/v1/bundles', '') };
+      throw new Error(JSON.stringify(d?.error ?? 'no result'));
+    };
+    try { return await Promise.any(endpoints.map(_try)); }
+    catch (_) { return { bundleId: null, endpoint: null }; }
+  }
+
   // ── Poll Jito bundle landing status ────────────────────────────────────────
   // Polls getInflightBundleStatuses (fast, updated every block) then falls back to
   // getBundleStatuses (chain history lookup). Same two-step logic as page-trade.js.
@@ -600,9 +638,9 @@
 
       // 3. Calculate Jito tip — must not exceed the sandwich exposure (ZendIQ slippage tolerance).
       //    tip = 80% of exposure → user keeps 20% as net savings from protection.
-      //    Below _PUMP_BUNDLE_MIN_SOL the exposure is smaller than any competitive tip — skip bundle.
+      //    If 80% of exposure is below the tip floor the bundle would cost more than it saves — skip.
       const _sandwichExposureLam = Math.round(solAmount * 1e9 * _ziqSlip / 100);
-      if (solAmount < _PUMP_BUNDLE_MIN_SOL) {
+      if (!_pumpBundleProfitable(solAmount, _ziqSlip)) {
         // Trade too small to bundle profitably — submit direct via RPC.
         // Show explanation card while wallet prompt is open.
         const _expLamDirect = Math.round(solAmount * 1e9 * _ziqSlip / 100);
@@ -637,73 +675,65 @@
       const _ixDiag = _readPumpBuyIxData([rawTxBytes]);
       const freshTxBytes = await _patchFreshBlockhash(rawTxBytes);
 
-      // 4. Inject Jito tip instruction directly into the buy tx.
-      //    This eliminates the 2-tx bundle that was failing with Invalid status —
-      //    Jito's sequential simulation rejected the separate tip tx because the buy tx
-      //    depleted the user's SOL balance first.  With the tip inside the buy tx,
-      //    the tip is paid atomically from the same balance before the buy executes.
-      const injectedTxBytes = _injectJitoTip(freshTxBytes, _tipLamports);
-      if (!injectedTxBytes) throw new Error('Failed to inject Jito tip — cannot submit bundle');
+      // 4. Build a separate v0 Jito tip transfer tx using the SAME blockhash
+      //    as the buy tx, so both land in the same block. Buy tx is
+      //    pumpportal's bytes — untouched except for the fresh blockhash.
+      const _userB58  = ns.walletPubkey || ns._wsAccount?.address;
+      const _bhBytes  = _extractBlockhashFromTx(freshTxBytes);
+      const _tipTxBytes = _buildJitoTipTx(_userB58, _bhBytes, _tipLamports, true /* v0 */);
+      if (!_tipTxBytes) throw new Error('Failed to build Jito tip tx');
 
-      // 4b. Inject DontFront account -- signals Jito block engine this tx is
-      // sandwich-protected. Appended as last static read-only unsigned account;
-      // no instruction references it so no index shifts are needed.
-      const _withDontFront = _injectDontFrontPump(injectedTxBytes);
-
-      // 5. Sign single tx with wallet (one prompt)
-      const signedBytes = await _wsSignTx(_withDontFront);
-      if (!signedBytes) throw new Error('Wallet returned no signed bytes');
-      const _sigFilled = signedBytes.slice(1, 65).some(b => b !== 0);
-
-      // 6. Extract signature
-      const sig = ns.b58Encode?.(signedBytes.slice(1, 65)) ?? null;
-
-      // 7. Simulate before submitting — catches stale state early
-      const _toB64 = (b) => { let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192)); return btoa(s); };
-      try {
-        const _simRes = await ns.rpcCall('simulateTransaction', [_toB64(signedBytes), { encoding: 'base64', commitment: 'confirmed', sigVerify: true }]);
-        const _simVal = _simRes?.result?.value;
-        if (_simVal?.err) {
-          console.warn('[ZendIQ PUMP] tx simulation FAILED:', JSON.stringify(_simVal.err), '| logs:', (_simVal.logs ?? []).slice(-5).join(' | '));
-        } else {
-        }
-      } catch (_simE) {
-        console.warn('[ZendIQ PUMP DBG] simulation RPC error (non-fatal):', _simE.message);
-      }
-
-      // 8. Submit via Jito sendTransaction?bundleOnly=true — full sandwich protection
+      // 5. Sign both txs in one wallet prompt — bundle order is [buy, tip].
       ns._pumpTxWasOptimised  = true;
       ns._pumpTxSigHandled    = true;
       window.__zendiq_ws_confirmed = false;
-      const _jitoResult = await _submitToJito([signedBytes]);
+      const [signedBuyBytes, signedTipBytes] = await _wsSignBundle([freshTxBytes, _tipTxBytes]);
+      if (!signedBuyBytes || !signedTipBytes) throw new Error('Wallet returned no signed bytes');
+
+      // 6. Extract buy sig (poll target + Activity record).
+      const sig = ns.b58Encode?.(signedBuyBytes.slice(1, 65)) ?? null;
+
+      // 7. Simulate the buy tx (signed) — catches stale state early.
+      const _toB64 = (b) => { let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192)); return btoa(s); };
+      try {
+        const _simRes = await ns.rpcCall('simulateTransaction', [_toB64(signedBuyBytes), { encoding: 'base64', commitment: 'confirmed', sigVerify: true }]);
+        const _simVal = _simRes?.result?.value;
+        if (_simVal?.err) {
+          console.warn('[ZendIQ PUMP] tx simulation FAILED:', JSON.stringify(_simVal.err), '| logs:', (_simVal.logs ?? []).slice(-5).join(' | '));
+        }
+      } catch (_) {}
+
+      // 8. Submit as 2-tx bundle to Jito's /api/v1/bundles (sendBundle).
+      const _jitoResult = await _submitJitoBundle2tx(signedBuyBytes, signedTipBytes);
 
       // 9. Show "sending" state while awaiting on-chain confirmation
       ns.widgetSwapStatus = 'pump-sending';
       try { ns.renderWidgetPanel?.(); } catch (_) {}
 
-      // 10. Poll for on-chain result
-      // sendTransaction?bundleOnly=true returns a tx signature directly.
-      // x-bundle-id header may not be accessible due to CORS — use bundle ID if available,
-      // otherwise poll the tx signature via standard RPC.
-      let confirmed;
-      if (_jitoResult?.bundleId) {
-        const _jitoBase = _jitoResult.endpoint;
-        confirmed = await _awaitJitoBundleConfirmation(_jitoResult.bundleId, _jitoBase);
-        if (confirmed?.err === 'bundle_invalid') {
-          // Bundle entered auction but was not selected — poll sig as it may still land
-          confirmed = sig ? await _awaitConfirmation(sig, 15000) : null;
-          if (!confirmed) confirmed = { ok: false, err: 'bundle not filled \u2014 click Buy to retry.' };
-        } else if (confirmed === null && sig) {
-          confirmed = await _awaitConfirmation(sig, 15000);
-        }
-      } else if (_jitoResult?.sig || sig) {
-        // No bundle ID from header (CORS) — poll the tx signature directly
-        const _pollSig = sig ?? _jitoResult.sig;
-        confirmed = await _awaitConfirmation(_pollSig, 25000);
-        if (!confirmed) confirmed = { ok: false, err: 'bundle not confirmed \u2014 click Buy to retry.' };
-      } else {
-        // All Jito endpoints failed — bundle was never submitted.
-        confirmed = { ok: false, err: 'all Jito endpoints unavailable \u2014 click Buy to retry.' };
+      // 10. Poll for on-chain result.
+      //     If bundleId returned → poll Jito bundle status; on bundle_invalid,
+      //     fall through to direct sig poll (tx may still land via Jito's leaky
+      //     relay).  Always also race a direct sig poll as a backup.
+      //     First non-null result wins; null only if both timeout.
+      let confirmed = null;
+      const _directPromise = sig ? _awaitConfirmation(sig, 30000) : Promise.resolve(null);
+      const _bundlePromise = _jitoResult?.bundleId
+        ? (async () => {
+            const c = await _awaitJitoBundleConfirmation(_jitoResult.bundleId, _jitoResult.endpoint);
+            if (c?.err === 'bundle_invalid') return null;
+            return c;
+          })()
+        : Promise.resolve(null);
+      // Promise.any treats nulls as rejections so the first truthy result wins.
+      const _wrap = (p) => p.then(v => v ?? Promise.reject(null));
+      try {
+        confirmed = await Promise.any([_wrap(_directPromise), _wrap(_bundlePromise)]);
+      } catch (_) {
+        confirmed = null;
+      }
+
+      if (!confirmed) {
+        confirmed = { ok: false, err: 'bundle not confirmed \u2014 click Buy to retry.' };
       }
 
       if (confirmed === null) {
@@ -1775,7 +1805,7 @@
       const botWin    = pfc.solAmount > 0 ? pfc.solAmount * (slip / 100) : null;
       const botWinU   = botWin != null ? botWin * solP : null;
       // Jito bundle: protect the full bot window; direct path: show slippage-reduction delta only.
-      const _monDirect = pfc.solAmount < _PUMP_BUNDLE_MIN_SOL;
+      const _monDirect = !_pumpBundleProfitable(pfc.solAmount, _ziqSl);
       const savSol    = botWin != null
         ? (_monDirect ? Math.max(0, botWin - pfc.solAmount * _ziqSl / 100) : botWin)
         : null;
@@ -1860,10 +1890,19 @@
       const fmtU = v => v < 0.001 ? `~$${v.toFixed(4)}` : v < 0.01 ? `~$${v.toFixed(3)}` : `~$${v.toFixed(2)}`;
       const slipLv  = slip > 3 ? 'CRITICAL' : slip > 1 ? 'HIGH' : slip > 0.5 ? 'MEDIUM' : 'LOW';
       const origExp = pfc.solAmount > 0 ? pfc.solAmount * slip / 100 : null;
-      const _isDirectPath = pfc.solAmount < _PUMP_BUNDLE_MIN_SOL;
-      // Jito bundle protects the entire bot window; direct path only saves the slippage-reduction delta.
+      const _isDirectPath = !_pumpBundleProfitable(pfc.solAmount, _ziqSl);
+      // Three-way classification of the direct path:
+      //   _noOptimisation: user already at ≤ ZendIQ's target slippage — pure passthrough
+      //   _slipOptimised:  ZendIQ patches slippage but bundle isn't profitable — use own RPC + show savings
+      //   bundle (else):   Jito bundle path (handled separately)
+      const _noOptimisation = _isDirectPath && _ziqSl >= slip;
+      const _slipOptimised  = _isDirectPath && !_noOptimisation;
+      // Jito bundle protects the entire bot window; slippage-only path saves the slippage-reduction delta;
+      // no-op passthrough has no savings to claim.
       const savSol  = origExp != null
-        ? (_isDirectPath ? Math.max(0, origExp - pfc.solAmount * _ziqSl / 100) : origExp)
+        ? (_noOptimisation ? 0
+          : _slipOptimised ? Math.max(0, origExp - pfc.solAmount * _ziqSl / 100)
+          : origExp)
         : null;
       const savUsd  = savSol != null ? savSol * solP : null;
 
@@ -2152,9 +2191,60 @@
         return true;
       }
       if (id === 'sr-btn-pump-optimise') {
-        // Both direct and bundle paths: resolve 'optimise' so page-interceptor does nothing,
-        // then _signAndSubmitPumpTx handles signing internally (direct path = pumpportal.fun
-        // tx at 0.5% via RPC; bundle path = Jito bundle). This was the working pre-refactor path.
+        // Three-way path:
+        //   1. _noOptimisation: user already at ≤ ZendIQ's target — pure passthrough via pump's own click flow.
+        //      No second wallet prompt, no RPC fetch — nothing to optimise.
+        //   2. slippage-optimised (no bundle): use ZendIQ's own RPC path with pumpportal tx so we can
+        //      authoritatively show the savings comparison vs original slippage.
+        //   3. bundle profitable: standalone _signAndSubmitPumpTx (Jito bundle, single sign).
+        const _pfc = ns.pumpFunContext;
+        const _slip = _pfc?.slippagePct ?? 1;
+        const _ziqSl = _pfc?.ziqSlip ?? Math.min(1.0, Math.max(0.5, _slip));
+        const _isDirect = !_pumpBundleProfitable(_pfc?.solAmount ?? 0, _ziqSl);
+        const _noOpt = _isDirect && _ziqSl >= _slip;
+        if (_noOpt) {
+          // Path 1: pure passthrough — user already at optimal slippage, nothing to do.
+          ns.pumpFunWantOptimise = false;
+          ns._pumpTxSigHandled = false;
+          ns.widgetOriginalSigningInfo = {
+            inputMint:     'So11111111111111111111111111111111111111112',
+            outputMint:    _pfc?.outputMint ?? ns.lastOutputMint ?? null,
+            inputSymbol:   'SOL',
+            outputSymbol:  ns.tokenScoreResult?.symbol ?? _pfc?.tokenSymbol
+                             ?? ns.tokenScoreCache?.get(_pfc?.outputMint ?? ns.lastOutputMint)?.result?.symbol ?? '?',
+            inputDecimals:  9,
+            outputDecimals: 6,
+            inAmt:         _pfc?.solAmount ?? null,
+            inAmountRaw:   null,
+            riskScore:     _pfc?.risk?.score ?? ns.lastRiskResult?.score ?? null,
+            riskLevel:     _pfc?.risk?.level ?? ns.lastRiskResult?.level ?? null,
+          };
+          ns.widgetSwapStatus = 'signing-original';
+          ns.widgetActiveTab  = 'monitor';
+          const _wp = document.getElementById('sr-widget');
+          if (_wp) { _wp.style.display = ''; if (!_wp.classList.contains('expanded')) _wp.classList.add('expanded'); }
+          ns.renderWidgetPanel?.();
+          window.__zendiq_ws_confirmed = true;
+          if (ns.pendingDecisionResolve) {
+            const res = ns.pendingDecisionResolve;
+            ns.pendingDecisionResolve = null;
+            ns.pendingDecisionPromise = null;
+            res('confirm');
+          }
+          clearTimeout(ns._pumpSigningTimeout);
+          ns._pumpSigningTimeout = setTimeout(() => {
+            if (ns.widgetSwapStatus === 'signing-original') {
+              ns.widgetSwapStatus = '';
+              ns.pumpFunContext    = null;
+              ns._pumpTxSigHandled = false;
+              window.__zendiq_ws_confirmed = false;
+              try { ns.renderWidgetPanel?.(); } catch (_) {}
+            }
+          }, 20000);
+          return true;
+        }
+        // Paths 2 + 3: ZendIQ-controlled tx via _signAndSubmitPumpTx.
+        // Direct (path 2) uses pumpportal + own RPC at optimised slippage; bundle (path 3) uses Jito.
         ns.pumpFunWantOptimise = false;
         ns._pumpTxSigHandled   = false;
         if (ns.pendingDecisionResolve) {

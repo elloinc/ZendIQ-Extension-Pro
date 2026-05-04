@@ -612,7 +612,7 @@
     if (!user) return;
     // Optimised slippage: clamp user's tolerance to [0.5%, 1.0%].
     // Jito bundle + DontFront protect against bots so 1% fills more often without extra risk.
-    const _ziqSlip = pfc.ziqSlip ?? Math.min(1.0, Math.max(0.5, pfc.slippagePct ?? 1.0));
+    const _ziqSlip = pfc.ziqSlip ?? Math.min(1.0, pfc.slippagePct ?? 1.0);
 
     ns.widgetSwapStatus = 'pump-signing';
     try { ns.renderWidgetPanel?.(); } catch (_) {}
@@ -1054,26 +1054,27 @@
   }
 
   // Raw scan for the pump buy discriminator (0x66 0x32 0x3d 0x12 0x01 0xda 0xeb 0xea).
-  // Returns { maxSolCostSol, slippageBps, tokenAmountRaw } or null.
+  // Returns { maxSolCostSol, tokenAmountRaw } or null.
   // Works without any web3.js window global — pure byte scan.
+  // NOTE: pump.fun's buy instruction is exactly 24 bytes (8 discriminator + 8
+  // tokenAmount + 8 maxSolCost). There is NO slippage field on-chain — slippage
+  // is derived externally from maxSolCost / userInputSol.
   function _readPumpBuyIxData(args) {
     const buf = _getPumpTxRawBytes(args);
     if (!buf || buf.length < 50) return null;
     try {
       const numSigs = buf[0] ?? 0;
       const scanStart = 1 + (numSigs & 0x7f) * 64; // skip over signatures
-      for (let i = scanStart; i + 25 < buf.length; i++) {
+      for (let i = scanStart; i + 23 < buf.length; i++) {
         // pump buy discriminator: 0x66 {0x06|0x32} 0x3d 0x12 ...
         // 0x06 = old 6EF8 program, 0x32 = new FAdo9NCw wrapper
         if (buf[i] !== 0x66 || (buf[i+1] !== 0x32 && buf[i+1] !== 0x06) || buf[i+2] !== 0x3d || buf[i+3] !== 0x12) continue;
         let tokenAmt = 0n, maxLam = 0n;
         for (let j = 0; j < 8; j++) tokenAmt |= BigInt(buf[i+8+j]) << BigInt(j*8);
         for (let j = 0; j < 8; j++) maxLam   |= BigInt(buf[i+16+j]) << BigInt(j*8);
-        const slippageBps = buf[i+24] | (buf[i+25] << 8);
         if (maxLam < 100_000n || maxLam > 1_000_000_000_000n) continue; // sanity: 0.0001–1000 SOL
         return {
           maxSolCostSol:  Number(maxLam) / 1e9,
-          slippageBps,
           tokenAmountRaw: Number(tokenAmt),
         };
       }
@@ -1317,14 +1318,11 @@
       // Update slippage from tx bytes now that the real tx has been built.
       // This is the authoritative source — overrides anything from DOM/localStorage.
       if (ns.pumpFunContext) {
-        const maxSol = _maxSolCostFromTx(args);
-        const solAmt = ns.pumpFunContext.solAmount;
-        if (maxSol > 0 && solAmt > 0) {
-          const derived = (maxSol / solAmt - 1) * 100;
-          if (derived >= 0.1 && derived <= 100) {
-            ns.pumpFunContext.slippagePct = derived;
-          }
-        }
+        // NOTE: do NOT overwrite slippagePct from tx bytes here.
+        // pump.fun's maxSolCost includes bonding-curve fees + rounding, so the
+        // derived value (e.g. 0.3% on a "1%" trade) does not match the user's
+        // actual UI tolerance. onSwapDetected already established the truth via
+        // localStorage/DOM scan — leave it alone.
         if (_rawOut != null && _rawOut > 0) ns.pumpFunContext.expectedTokenOutRaw = _rawOut;
       }
 
@@ -1484,21 +1482,32 @@
 
       // ── Slippage + SOL amount: read directly from tx bytes (most authoritative) ──
       // _readPumpBuyIxData does a raw discriminator scan — works on pump.fun where
-      // VersionedTransaction is not a window global.  Returns maxSolCost (SOL),
-      // slippageBps, and tokenAmountRaw without needing web3.js.
+      // VersionedTransaction is not a window global. Returns maxSolCost (SOL) and
+      // tokenAmountRaw. Slippage is NOT in the on-chain ix — derive from
+      // maxSolCost / userInputSol.
       const _ixData = _readPumpBuyIxData(ns.pumpFunRawArgs ?? []);
       const maxSolCostFromTx = _ixData?.maxSolCostSol ?? null;
       let slip;
-      // Primary: slippageBps directly from tx data — exact, no DOM needed
-      if (_ixData?.slippageBps != null && _ixData.slippageBps >= 5 && _ixData.slippageBps <= 10000) {
-        slip = _ixData.slippageBps / 100;
-      }
 
-      if (slip == null && maxSolCostFromTx > 0 && solAmtRaw > 0) {
-        const derived = (maxSolCostFromTx / solAmtRaw - 1) * 100;
-        if (derived >= 0.1 && derived <= 100) {
-          slip = derived;
-        }
+      // Primary: pump.fun's localStorage settings — this is the user's actual
+      // chosen slippage tolerance (matches what their UI shows). Authoritative.
+      if (slip == null) {
+        slip = (() => {
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (!key) continue;
+              const kl = key.toLowerCase();
+              if (!kl.includes('slip')) continue;
+              const raw = parseFloat(localStorage.getItem(key));
+              if (!isFinite(raw) || raw <= 0) continue;
+              // Fraction (e.g. 0.01 = 1%) or percentage (e.g. 1 = 1%)
+              const pct = raw < 1 ? raw * 100 : raw;
+              if (pct >= 0.1 && pct <= 100) return pct;
+            }
+          } catch (_) {}
+          return null;
+        })();
       }
 
       // DOM fallback: scan visible % buttons/inputs near the trade form.
@@ -1519,34 +1528,23 @@
         })();
       }
 
-      // Fallback: read slippage from pump.fun's localStorage settings.
-      // pump.fun persists user-set slippage under various keys.
-      if (slip == null) {
-        slip = (() => {
-          try {
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (!key) continue;
-              const kl = key.toLowerCase();
-              if (!kl.includes('slip')) continue;
-              const raw = parseFloat(localStorage.getItem(key));
-              if (!isFinite(raw) || raw <= 0) continue;
-              // Fraction (e.g. 0.01 = 1%) or percentage (e.g. 1 = 1%)
-              const pct = raw < 1 ? raw * 100 : raw;
-              if (pct >= 0.1 && pct <= 100) return pct;
-            }
-          } catch (_) {}
-          return null;
-        })();
+      // Last-resort fallback: derive from tx bytes. pump.fun's maxSolCost
+      // includes bonding-curve fees + rounding, so this is approximate only.
+      // Used only if both localStorage and DOM scans failed.
+      if (slip == null && maxSolCostFromTx > 0 && solAmtRaw > 0) {
+        const derived = (maxSolCostFromTx / solAmtRaw - 1) * 100;
+        if (derived >= 0.1 && derived <= 100) {
+          slip = derived;
+        }
       }
 
       if (slip == null) slip = 10; // last-resort default — will be corrected by onWalletArgs
-      // Derive SOL amount: prefer API/DOM → tx bytes (most reliable) → maxSolCost back-calculation
-      const solAmtFromTx = (_ixData?.maxSolCostSol != null && _ixData.slippageBps != null)
-        ? _ixData.maxSolCostSol / (1 + _ixData.slippageBps / 10000)
+      // Derive SOL amount: prefer API/DOM → tx bytes back-calculation using detected slip
+      const solAmtFromTx = (maxSolCostFromTx != null && slip != null)
+        ? maxSolCostFromTx / (1 + slip / 100)
         : null;
-      // Priority: tx bytes (most authoritative) > API body > cached input
-      const solAmt = solAmtFromTx || solAmtRaw || (maxSolCostFromTx != null ? maxSolCostFromTx / (1 + slip / 100) : 0);
+      // Priority: API/DOM input (exact user intent) > tx-bytes back-calc > maxSolCost
+      const solAmt = solAmtRaw || solAmtFromTx || (maxSolCostFromTx != null ? maxSolCostFromTx / (1 + slip / 100) : 0);
 
       // Guard: no input detected at all — show an error rather than buying for 0 SOL
       if (!solAmt) {
@@ -1598,7 +1596,7 @@
         tokenSymbol: ns.tokenScoreResult?.symbol ?? null,
         solAmount:   solAmt,
         slippagePct: slip,
-        ziqSlip:     Math.min(1.0, Math.max(0.5, slip)),
+        ziqSlip:     Math.min(1.0, slip),
         risk:        pfRisk ?? null,
         tokenScore:  ns.tokenScoreResult ?? null,
       };
@@ -1625,27 +1623,33 @@
         ns._fitBodyHeight?.(w);
       }
 
-      if (slip > 0.5) {
-        // Slippage can be optimised — show Review & Sign and keep promise open.
+      // Always show Review & Sign — user keeps full control via buttons
+      // (Continue with original / Sign at optimised slippage / Cancel).
+      // Auto-accept setting is the ONLY way to skip the panel: when ON and
+      // ZendIQ has a real optimisation to apply (slip > 0.5), auto-resolve
+      // 'optimise' so _signAndSubmitPumpTx fires without user interaction.
+      ns.widgetSwapStatus       = 'pump-slippage-review';
+      ns.pendingDecisionResolve = resolve;
+      ns._pumpPrefetchedTx      = null;
+      const _prefetchUser = ns.resolveWalletPubkey?.();
+      if (_prefetchUser && slip > 0.5) {
         // Prefetch the pumpportal tx in the background while the user reviews the panel,
         // so the wallet popup opens instantly when they click Sign (no 200-500ms fetch wait).
-        ns.widgetSwapStatus       = 'pump-slippage-review';
-        ns.pendingDecisionResolve = resolve;
-        ns._pumpPrefetchedTx      = null;
-        const _prefetchUser = ns.resolveWalletPubkey?.();
-        if (_prefetchUser) {
-          _fetchPumpportalTx(ns.pumpFunContext.outputMint, ns.pumpFunContext.solAmount, _prefetchUser, ns.pumpFunContext.ziqSlip)
-            .then(bytes => { ns._pumpPrefetchedTx = { bytes, fetchedAt: Date.now() }; })
-            .catch(() => {}); // silent — _signAndSubmitPumpTx will re-fetch on failure
-        }
-        ns.renderWidgetPanel?.();
-        return;
+        _fetchPumpportalTx(ns.pumpFunContext.outputMint, ns.pumpFunContext.solAmount, _prefetchUser, ns.pumpFunContext.ziqSlip)
+          .then(bytes => { ns._pumpPrefetchedTx = { bytes, fetchedAt: Date.now() }; })
+          .catch(() => {}); // silent — _signAndSubmitPumpTx will re-fetch on failure
       }
-      // Already near-optimal (≤ 0.5%) — pass through immediately
-      ns.widgetSwapStatus = '';
       ns.renderWidgetPanel?.();
-      resolve('confirm');
-      ns.pendingDecisionPromise = null;
+
+      // Auto-accept: skip the panel and go straight to ZendIQ's optimised path.
+      // Only fires when there's an actual optimisation to apply (slip > 0.5%).
+      // For ≤ 0.5% the user's order is already at ZendIQ's target — auto-accept
+      // would still prompt the wallet immediately, so the panel is shown so the
+      // user can pick Continue-with-original (no extra wallet popup needed).
+      if (ns.autoAccept && slip > 0.5) {
+        try { ns._signAndSubmitPumpTx?.(); } catch (_) {}
+      }
+      return;
     },
 
     // ── Wallet Standard path: handle 'pump-optimise' and 'confirm' decisions ──
@@ -1780,7 +1784,7 @@
 
       const pfc  = ns.pumpFunContext;
       const slip = pfc.slippagePct ?? 1;
-      const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, Math.max(0.5, slip));
+      const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, slip);
       const solP = ns.widgetLastPriceData?.solPriceUsd ?? 80;
       const ts   = (ns.tokenScoreResult?.mint === pfc.outputMint &&
                     (ns.tokenScoreResult?.loaded || ns.tokenScoreResult?.factors?.length))
@@ -1877,7 +1881,7 @@
 
       const pfc    = ns.pumpFunContext;
       const slip   = pfc.slippagePct ?? 1;
-      const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, Math.max(0.5, slip));
+      const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, slip);
       const solP   = ns.widgetLastPriceData?.solPriceUsd ?? 80;
       const pfRisk = ns.lastRiskResult ?? pfc.risk;
       const mevR   = pfRisk?.mev ?? null;
@@ -1890,15 +1894,21 @@
       const fmtU = v => v < 0.001 ? `~$${v.toFixed(4)}` : v < 0.01 ? `~$${v.toFixed(3)}` : `~$${v.toFixed(2)}`;
       const slipLv  = slip > 3 ? 'CRITICAL' : slip > 1 ? 'HIGH' : slip > 0.5 ? 'MEDIUM' : 'LOW';
       const origExp = pfc.solAmount > 0 ? pfc.solAmount * slip / 100 : null;
-      const _isDirectPath = !_pumpBundleProfitable(pfc.solAmount, _ziqSl);
-      // Three-way classification of the direct path:
-      //   _noOptimisation: user already at ≤ ZendIQ's target slippage — pure passthrough
-      //   _slipOptimised:  ZendIQ patches slippage but bundle isn't profitable — use own RPC + show savings
-      //   bundle (else):   Jito bundle path (handled separately)
-      const _noOptimisation = _isDirectPath && _ziqSl >= slip;
-      const _slipOptimised  = _isDirectPath && !_noOptimisation;
-      // Jito bundle protects the entire bot window; slippage-only path saves the slippage-reduction delta;
-      // no-op passthrough has no savings to claim.
+      // Two independent conditions — each can apply on its own:
+      //   _lowersSlip:        ZendIQ patches maxSolCost to a lower slippage tolerance
+      //   _bundleProfitable:  Jito bundle pays for itself (80% of bot window > tip floor)
+      // Combined paths:
+      //   neither            → pure passthrough "Continue with original" (no patch, no tip)
+      //   slip only          → patches maxSolCost via own RPC, no Jito tip, savings = slip-reduction delta
+      //   bundle only        → keeps slip, sends via Jito bundle, savings = full bot window (atomic protection)
+      //   slip + bundle      → patches AND bundles, savings = full bot window
+      const _lowersSlip       = _ziqSl < slip - 0.001;
+      const _bundleProfitable = _pumpBundleProfitable(pfc.solAmount, _ziqSl);
+      const _noOptimisation   = !_lowersSlip && !_bundleProfitable;
+      const _isDirectPath     = !_bundleProfitable; // no Jito = direct send
+      const _slipOptimised    = _isDirectPath && _lowersSlip;
+      // Bundle protects the entire bot window atomically; slippage-only path saves the
+      // slippage-reduction delta only; no-op passthrough has nothing to claim.
       const savSol  = origExp != null
         ? (_noOptimisation ? 0
           : _slipOptimised ? Math.max(0, origExp - pfc.solAmount * _ziqSl / 100)
@@ -1988,33 +1998,64 @@
       }
 
       // ── Savings & Costs card ──
+      // Direct path = no Jito bundle (either pure passthrough or slip-only).
+      // The pure-passthrough subset (_noOptimisation) further hides any savings claim.
       const costsRows = _isDirectPath
-        ? [
-            { label: 'Bot protection', value: `Active \u00b7 ${_ziqSl.toFixed(1)}% enforced`,        valueColor: '#14F195', tooltip: `ZendIQ patches maxSolCost so your buy cannot be sandwiched beyond ${_ziqSl.toFixed(1)}% slippage.` },
-            { label: 'Jito bundle',    value: 'Skipped \u00b7 trade too small',      valueColor: '#6B6B8A', tooltip: `Max sandwich exposure (${_expSol} SOL) is smaller than the minimum Jito tip (${_minTipSol} SOL). Sending direct is more profitable.` },
-            { label: 'ZendIQ Fee',     value: 'FREE \u00b7 Beta',                    valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
-          ]
+        ? (_noOptimisation
+          ? [
+              { label: 'Bot protection', value: `\u2014 \u00b7 already at ${slip.toFixed(1)}%`, valueColor: '#6B6B8A', tooltip: `Your slippage (${slip.toFixed(1)}%) is already at or below ZendIQ's target. Nothing to patch.` },
+              { label: 'Jito bundle',    value: 'Skipped \u00b7 trade too small',     valueColor: '#6B6B8A', tooltip: `Max sandwich exposure (${_expSol} SOL) is too small \u2014 80% of it is below the ${_minTipSol} SOL Jito tip floor.` },
+              { label: 'ZendIQ Fee',     value: 'FREE \u00b7 Beta',                   valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
+            ]
+          : [
+              { label: 'Bot protection', value: `Active \u00b7 ${_ziqSl.toFixed(1)}% enforced`,        valueColor: '#14F195', tooltip: `ZendIQ patches maxSolCost so your buy cannot be sandwiched beyond ${_ziqSl.toFixed(1)}% slippage.` },
+              { label: 'Jito bundle',    value: 'Skipped \u00b7 trade too small',      valueColor: '#6B6B8A', tooltip: `Max sandwich exposure (${_expSol} SOL) is too small \u2014 80% of it is below the ${_minTipSol} SOL Jito tip floor.` },
+              { label: 'ZendIQ Fee',     value: 'FREE \u00b7 Beta',                    valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
+            ])
         : [
             { label: 'Bot protection savings', value: savSol != null && savSol > 0.000001 ? `~${fmt(savSol)} SOL (${fmtU(savUsd)})` : '\u2014', valueColor: savSol != null && savSol > 0.000001 ? '#14F195' : '#9B9BAD', tooltip: `Maximum SOL bots can no longer extract once slippage is reduced from ${slip.toFixed(1)}% to ${_ziqSl.toFixed(1)}%.` },
             { label: 'Jito bundle tip',        value: `~${_tipSol} SOL (${fmtU(_tipUsd)})`, valueColor: '#9945FF', tooltip: 'Tip paid to Jito validators for atomic bundle inclusion. Always less than the sandwich exposure it protects.' },
             { label: 'ZendIQ Fee',             value: 'FREE \u00b7 Beta',                    valueColor: '#14F195', tooltip: 'ZendIQ charges no fee during open beta.' },
-            { label: 'Est. Net Benefit',        value: savSol != null && (savSol - _tipLam / 1e9) > 0.000001 ? `~${fmt(Math.max(0, savSol - _tipLam / 1e9))} SOL` : '\u2248 none', valueColor: savSol != null && (savSol - _tipLam / 1e9) > 0.000001 ? '#14F195' : '#C2C2D4', tooltip: 'SOL saved from sandwich protection minus the Jito bundle tip.' },
+            { label: 'Est. Net Benefit', value: (() => {
+              if (savSol == null) return '\u2014';
+              const _net = savSol - _tipLam / 1e9;
+              if (Math.abs(_net) < 0.000001) return '\u2248 none';
+              const _netUsd = _net * solP;
+              const _sign = _net >= 0 ? '+' : '\u2212';
+              return `${_sign}${fmt(Math.abs(_net))} SOL (${_sign}${fmtU(Math.abs(_netUsd)).replace('~$', '$')})`;
+            })(), valueColor: (() => {
+              if (savSol == null) return '#9B9BAD';
+              const _net = savSol - _tipLam / 1e9;
+              if (Math.abs(_net) < 0.000001) return '#C2C2D4';
+              return _net >= 0 ? '#14F195' : '#FF6B6B';
+            })(), tooltip: 'SOL saved from sandwich protection minus the Jito bundle tip. Negative means the tip exceeds the protection value on this trade.' },
           ];
 
-      // ── Info banner (direct path — replaces Jupiter negative-net banner placement) ──
-      const _infoBanner = _isDirectPath
-        ? `<div style="background:rgba(20,241,149,0.07);border:1px solid rgba(20,241,149,0.25);border-radius:8px;padding:10px 12px;margin-bottom:8px" title="Max sandwich exposure on this trade is ${_expSol} SOL.\nMin Jito tip floor is ${_minTipSol} SOL.\nThe tip would exceed the potential loss \u2014 sending direct keeps this trade profitable.">
-          <div style="font-size:13px;font-weight:700;color:#14F195;margin-bottom:3px">\u2713 Bundle skipped \u2014 savings without the fee</div>
-          <div style="font-size:12px;color:#9B9BAD;line-height:1.5">Max exposure: <span style="color:#E8E8F0">${_expSol} SOL</span> &middot; Jito tip floor: <span style="color:#E8E8F0">${_minTipSol} SOL</span> \u2014 sending direct is more profitable.</div>
+      // ── Info banner ──
+      // Pure-passthrough: explain why no action is being taken.
+      // Slip-only direct: explain Jito was skipped because trade too small.
+      const _infoBanner = _noOptimisation
+        ? `<div style="background:rgba(20,241,149,0.07);border:1px solid rgba(20,241,149,0.25);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+          <div style="font-size:13px;font-weight:700;color:#14F195;margin-bottom:3px">\u2713 Already optimal \u2014 nothing to do</div>
+          <div style="font-size:12px;color:#9B9BAD;line-height:1.5">Your ${slip.toFixed(1)}% slippage is at or below ZendIQ's target, and the bot window (${_expSol} SOL) is too small to bundle profitably.</div>
         </div>`
-        : '';
+        : _isDirectPath
+          ? `<div style="background:rgba(20,241,149,0.07);border:1px solid rgba(20,241,149,0.25);border-radius:8px;padding:10px 12px;margin-bottom:8px" title="Max sandwich exposure on this trade is ${_expSol} SOL.\nMin Jito tip floor is ${_minTipSol} SOL.\nThe tip would exceed the potential loss \u2014 sending direct keeps this trade profitable.">
+            <div style="font-size:13px;font-weight:700;color:#14F195;margin-bottom:3px">\u2713 Bundle skipped \u2014 savings without the fee</div>
+            <div style="font-size:12px;color:#9B9BAD;line-height:1.5">Max exposure: <span style="color:#E8E8F0">${_expSol} SOL</span> &middot; Jito tip floor: <span style="color:#E8E8F0">${_minTipSol} SOL</span> \u2014 sending direct is more profitable.</div>
+          </div>`
+          : '';
 
-      const _note = _isDirectPath
-        ? `ZendIQ enforces ${_ziqSl.toFixed(1)}% slippage and sends direct. No Jito tip \u2014 the trade is profitable without it.`
-        : `ZendIQ patches <code style="color:#9945FF;font-size:9px">maxSolCost</code> only. Buy amount unchanged. If the price moves &gt;${_ziqSl.toFixed(1)}% the tx reverts safely \u2014 retry immediately.`;
+      const _note = _noOptimisation
+        ? `Your slippage is already at ZendIQ's target and the trade is too small to bundle. Click below to send your original transaction unchanged.`
+        : _isDirectPath
+          ? `ZendIQ enforces ${_ziqSl.toFixed(1)}% slippage and sends direct. No Jito tip \u2014 the trade is profitable without it.`
+          : `ZendIQ patches <code style="color:#9945FF;font-size:9px">maxSolCost</code> only. Buy amount unchanged. If the price moves &gt;${_ziqSl.toFixed(1)}% the tx reverts safely \u2014 retry immediately.`;
 
       const _primaryBtn = { id: 'sr-btn-pump-optimise',
-        label: _isDirectPath ? '\u2713 Continue with original order' : `\u2736 Sign at ${_ziqSl.toFixed(1)}% + Jito bundle` };
+        label: _noOptimisation ? '\u2713 Continue with original order'
+             : _isDirectPath   ? `\u2736 Sign at ${_ziqSl.toFixed(1)}% (direct)`
+                                : `\u2736 Sign at ${_ziqSl.toFixed(1)}% + Jito bundle` };
       const _secondaryBtns = [
         { id: 'sr-btn-pump-proceed', label: `\u21a9 Proceed at ${slip.toFixed(1)}% (original)`, tooltip: `Proceed with your original ${slip.toFixed(1)}% slippage \u2014 ZendIQ will not modify the transaction` },
         { id: 'sr-btn-pump-cancel',  label: '\u2715 Cancel', tooltip: 'Cancel this swap entirely. Nothing will be sent to your wallet \u2014 click Buy again to retry.' },
@@ -2199,9 +2240,12 @@
         //   3. bundle profitable: standalone _signAndSubmitPumpTx (Jito bundle, single sign).
         const _pfc = ns.pumpFunContext;
         const _slip = _pfc?.slippagePct ?? 1;
-        const _ziqSl = _pfc?.ziqSlip ?? Math.min(1.0, Math.max(0.5, _slip));
-        const _isDirect = !_pumpBundleProfitable(_pfc?.solAmount ?? 0, _ziqSl);
-        const _noOpt = _isDirect && _ziqSl >= _slip;
+        const _ziqSl = _pfc?.ziqSlip ?? Math.min(1.0, _slip);
+        // Pure passthrough only when ZendIQ neither lowers slip nor adds a profitable bundle.
+        // Either condition alone still warrants the optimise path.
+        const _lowersSlip       = _ziqSl < _slip - 0.001;
+        const _bundleProfitable = _pumpBundleProfitable(_pfc?.solAmount ?? 0, _ziqSl);
+        const _noOpt = !_lowersSlip && !_bundleProfitable;
         if (_noOpt) {
           // Path 1: pure passthrough — user already at optimal slippage, nothing to do.
           ns.pumpFunWantOptimise = false;

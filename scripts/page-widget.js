@@ -563,9 +563,14 @@
               if (!h || typeof h !== 'object') return '';
               const agoSecs = Math.round((Date.now() - (h.timestamp||0)) / 1000);
               const ago = agoSecs < 60 ? agoSecs+'s ago' : agoSecs < 3600 ? Math.round(agoSecs/60)+'m ago' : Math.round(agoSecs/3600)+'h ago';
+              const _jitoUrlW = h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
+              const _jitoLinkW = _jitoUrlW
+                ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlW}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:12px" title="Open this bundle on Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
+                : '';
               const solscanLink = h.signature
                 ? `<a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" style="color:#14F195;text-decoration:none">${h.jitoTipSig ? 'Swap \u2197' : 'View on Solscan'}</a>`
                   + (h.jitoTipSig ? `\u00a0<a href="https://solscan.io/tx/${escapeHtml(h.jitoTipSig)}" target="_blank" style="color:#C2C2D4;text-decoration:none;font-size:12px">Jito tip \u2197</a>` : '')
+                  + _jitoLinkW
                 : '';
               // Format amounts EU-style
               const _fmtW = (val, sym) => { if (val == null || val === '') return '— ' + (sym||''); const n = parseFloat(val); if (!isFinite(n)) return String(val)+' '+(sym||''); const abs=Math.abs(n); const prec=abs>=1000?2:abs>=1?4:abs>=0.001?6:8; const [ip,dp]=n.toFixed(prec).split('.'); return ip.replace(/\B(?=(\d{3})+(?!\d))/g,'.')+(dp?','+dp:'')+' '+(sym||''); };
@@ -2753,9 +2758,15 @@
               html += savingsHtml;
               html += accHtml;
               html += `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#9B9BAD">`;
+              const _isBundledA = h.jitoBundle === true || (h.jitoTipLamports != null && h.jitoTipLamports > 0);
+              const _jitoUrlA = _isBundledA && h.signature ? `https://explorer.jito.wtf/?query=${escapeHtml(h.signature)}` : null;
+              const _jitoLinkA = _jitoUrlA
+                ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlA}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:12px" title="Open Jito Explorer to verify atomic execution and that no MEV/sandwich was detected. Click the matching bundle row to see full details.">Verify on Jito \u2197</a>`
+                : '';
               html += h.signature
                 ? `<div style="color:#14F195"><a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" style="color:inherit;text-decoration:none">${h.jitoTipSig ? 'Swap \u2197' : 'View on Solscan'}</a>`
                   + (h.jitoTipSig ? `\u00a0<a href="https://solscan.io/tx/${escapeHtml(h.jitoTipSig)}" target="_blank" style="color:#C2C2D4;text-decoration:none;font-size:12px">Jito tip \u2197</a>` : '')
+                  + _jitoLinkA
                   + `</div>`
                 : '<div/>';
               html += `<div style="color:#9B9BAD;font-size:12px">${ago}</div></div></div>`;
@@ -2969,9 +2980,13 @@
             } else if (h.quotedOut != null || h.rawOutAmount != null) {
               t += row(`<span title="Waiting for on-chain confirmation to compare against the ${_xLbl2}-quoted amount. Updates automatically a few seconds after the swap confirms." style="cursor:help">${_xLbl2} Quote Accuracy</span>`, 'pending\u2026', '#C2C2D4');
             }
-            // Solscan link
+            // Solscan link (+ Jito Explorer link for bundled trades with captured bundleId)
             if (h.signature) {
-              t += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)"><a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" rel="noopener" style="color:#14F195;font-size:12px;text-decoration:none">View on Solscan \u2197</a></div>`;
+              const _jitoUrlT = h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
+              const _jitoLinkT = _jitoUrlT
+                ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlT}" target="_blank" rel="noopener" style="color:#9945FF;font-size:12px;text-decoration:none" title="Open this bundle on Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
+                : '';
+              t += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)"><a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" rel="noopener" style="color:#14F195;font-size:12px;text-decoration:none">View on Solscan \u2197</a>${_jitoLinkT}</div>`;
             }
           }
           return t;

@@ -736,6 +736,8 @@
         confirmed = { ok: false, err: 'bundle not confirmed \u2014 click Buy to retry.' };
       }
 
+      const _confirmedBundleId = _jitoResult?.bundleId ?? null;
+
       if (confirmed === null) {
         // Timeout â€” treat optimistically as done
         ns.widgetSwapStatus    = 'pump-done';
@@ -743,14 +745,14 @@
         ns._pumpTxCooldownUntil = Date.now() + 10000;
         clearTimeout(ns._pumpSigningTimeout);
         try { ns.renderWidgetPanel?.(); } catch (_) {}
-        if (sig) _recordPumpActivity(sig, true, false, _tipLamports);
+        if (sig) _recordPumpActivity(sig, true, false, _tipLamports, _confirmedBundleId);
       } else if (confirmed.ok) {
         ns.widgetSwapStatus    = 'pump-done';
         ns.widgetOriginalTxSig  = sig ?? null;
         ns._pumpTxCooldownUntil = Date.now() + 10000;
         clearTimeout(ns._pumpSigningTimeout);
         try { ns.renderWidgetPanel?.(); } catch (_) {}
-        if (sig) _recordPumpActivity(sig, true, false, _tipLamports);
+        if (sig) _recordPumpActivity(sig, true, false, _tipLamports, _confirmedBundleId);
       } else {
         ns._pumpTxWasOptimised = false;
         const _errMsg = typeof confirmed.err === 'string'
@@ -816,7 +818,7 @@
 
   // ── Save a pump.fun trade to Activity and fire sandwich detection ──────
   // failed=true: tx landed on-chain but was rejected by the program (for transparency).
-  function _recordPumpActivity(sig, optimized, failed = false, tipLamports = 0) {
+  function _recordPumpActivity(sig, optimized, failed = false, tipLamports = 0, bundleId = null) {
     try {
       const pfc     = ns.pumpFunContext;
       const outMint = pfc?.outputMint ?? ns.lastOutputMint ?? null;
@@ -867,6 +869,7 @@
         swapType:    'bonding_curve',
         routeSource: 'pump.fun',
         jitoBundle:          optimized && tipLamports > 0,
+        jitoBundleId:        optimized && tipLamports > 0 ? bundleId : null,
         jitoTipLamports:     optimized && tipLamports > 0 ? tipLamports : null,
         jitoTipUsd:          optimized && tipLamports > 0 ? (tipLamports / 1e9) * solP : null,
         priorityFeeLamports: null, // pumpportal.fun bakes priority fee internally — not separately charged

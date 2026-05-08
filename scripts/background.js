@@ -47,6 +47,7 @@ const FETCH_JSON_ALLOWED = [
   'https://dublin.mainnet.block-engine.jito.wtf',
   'https://slc.mainnet.block-engine.jito.wtf',
   'https://singapore.mainnet.block-engine.jito.wtf',
+  'https://bundles.jito.wtf',
   'https://pumpportal.fun',
 ];
 
@@ -250,7 +251,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Try all endpoints in parallel; settle for first success.
     Promise.any(_rpcEndpoints.map(_fetchOne))
       .then(data => sendResponse({ ok: true, data }))
-      .catch(() => sendResponse({ ok: false, error: 'All RPC endpoints failed' }));
+      .catch((agg) => {
+        // Surface the actual per-endpoint errors so callers can diagnose
+        // sendTransaction rejections (e.g. "Transaction simulation failed: …").
+        const errs = (agg?.errors || []).map(e => e?.message || String(e));
+        const detail = errs.length ? errs.join(' | ') : (agg?.message || 'unknown');
+        sendResponse({ ok: false, error: 'All RPC endpoints failed: ' + detail });
+      });
+    return true;
+  }
+
+  // ── Jito bundleOnly submit — returns x-bundle-id header (not CORS-exposed from page) ──
+  if (msg.type === 'JITO_SUBMIT') {
+    const JITO_EPS = [
+      'https://amsterdam.mainnet.block-engine.jito.wtf',
+      'https://frankfurt.mainnet.block-engine.jito.wtf',
+      'https://london.mainnet.block-engine.jito.wtf',
+      'https://dublin.mainnet.block-engine.jito.wtf',
+      'https://ny.mainnet.block-engine.jito.wtf',
+      'https://slc.mainnet.block-engine.jito.wtf',
+      'https://singapore.mainnet.block-engine.jito.wtf',
+      'https://tokyo.mainnet.block-engine.jito.wtf',
+    ];
+    const body = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'sendTransaction',
+      params: [msg.signedTxB64, { encoding: 'base64' }],
+    });
+    const tryOne = async (base) => {
+      const r = await fetch(base + '/api/v1/transactions?bundleOnly=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body, signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json();
+      const bundleId = r.headers.get('x-bundle-id') ?? null;
+      if (d?.result) return { sig: d.result, bundleId, endpoint: base };
+      throw new Error(JSON.stringify(d?.error ?? 'no result'));
+    };
+    Promise.any(JITO_EPS.map(tryOne))
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(err  => sendResponse({ ok: false, error: err.message }));
     return true;
   }
 

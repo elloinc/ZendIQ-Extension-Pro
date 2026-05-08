@@ -458,6 +458,13 @@
       return origFn(...args);
     }
     if (window.__zendiq_own_tx) return origFn(...args);
+    // Bug 1 defense: ZendIQ is in the middle of signing a Jito bundle for this swap.
+    // Any concurrent sign request from the DEX app code (e.g. Raydium fetching signed
+    // bytes via a captured wallet reference to broadcast in parallel via plain RPC) MUST
+    // be refused — that parallel broadcast is the leak that lets a swap land on-chain
+    // even when our Jito bundle is dropped, producing a false "bundle landed" success.
+    // Throw with a non-4001 error so the DEX shows an error state rather than re-prompting.
+    if (ns._bundleSignInFlight) throw new Error('Transaction blocked: ZendIQ Jito bundle in flight');
     // Click interceptor already handled this swap — user confirmed, pass straight through.
     // Do NOT clear the flag here; the /execute fetch intercept is the final step and reads it.
     if (window.__zendiq_ws_confirmed) {
@@ -786,6 +793,9 @@
     if (window.__zendiq_own_tx) {
       return originalMethod(transaction, options);
     }
+    // Bug 1 defense: same as zendiqWsOverlay above — refuse external sign requests
+    // while ZendIQ is signing+submitting a Jito bundle, to prevent parallel broadcast.
+    if (ns._bundleSignInFlight) throw new Error('Transaction blocked: ZendIQ Jito bundle in flight');
     // Click interceptor already handled this swap — user confirmed, pass straight through.
     // Do NOT clear the flag here; the /execute fetch intercept is the final step and reads it.
     if (window.__zendiq_ws_confirmed) {

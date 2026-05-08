@@ -36,7 +36,7 @@
 
   function b58Encode(bytes) {
     const ALPHA = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-    const digits = [0];
+    const digits = [];
     for (let i = 0; i < bytes.length; i++) {
       let carry = bytes[i];
       for (let j = 0; j < digits.length; j++) {
@@ -46,7 +46,8 @@
       }
       while (carry) { digits.push(carry % 58); carry = (carry / 58) | 0; }
     }
-    for (let i = 0; bytes[i] === 0; i++) digits.push(0);
+    // One leading '1' per leading zero byte (base58 standard).
+    for (let i = 0; i < bytes.length && bytes[i] === 0; i++) digits.push(0);
     return digits.reverse().map(d => ALPHA[d]).join('');
   }
 

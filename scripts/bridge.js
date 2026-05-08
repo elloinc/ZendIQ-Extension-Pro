@@ -103,6 +103,24 @@ window.addEventListener('message', (e) => {
     return;
   }
 
+  // JITO_SUBMIT: route through background so x-bundle-id response header is readable
+  if (e.data.sr_bridge_to_ext && e.data.msg?.type === 'JITO_SUBMIT') {
+    const { signedTxB64, _id } = e.data.msg;
+    try {
+      chrome.runtime.sendMessage({ type: 'JITO_SUBMIT', signedTxB64 }, (res) => {
+        if (chrome.runtime.lastError) {
+          if (!chrome.runtime.lastError.message?.includes('context'))
+            console.warn('[ZendIQ][bridge] JITO_SUBMIT bg error', chrome.runtime.lastError.message);
+          return;
+        }
+        try { window.postMessage({ sr_bridge: true, msg: { type: 'JITO_SUBMIT_RESPONSE', _id, result: res } }, '*'); } catch (_) {}
+      });
+    } catch (err) {
+      if (!err?.message?.includes('context')) console.warn('[ZendIQ][bridge] JITO_SUBMIT error', err?.message);
+    }
+    return;
+  }
+
   // Legacy bridge messages — only forward whitelisted types
   if (e.data.sr_bridge_to_ext) {
     const ALLOWED_FROM_PAGE = new Set(['GET_HISTORY', 'HISTORY_UPDATE', 'LOG_PRO_EVENT']);

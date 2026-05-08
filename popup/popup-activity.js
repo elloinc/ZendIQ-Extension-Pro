@@ -455,10 +455,13 @@ function _renderHistoryEntry(h, idx) {
   const ago      = _fmtAgo(h.timestamp);
   const inVal    = _fmtAmt(h.amountIn,  h.tokenIn  || '?');
   const outVal   = _fmtAmt(h.amountOut, h.tokenOut || '?');
-  const _jitoUrlH = h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
+  const _jitoIdxMs = 90_000;
+  const _jitoElapsed = h.jitoBundleSubmittedAt ? Date.now() - h.jitoBundleSubmittedAt : _jitoIdxMs + 1;
+  const _jitoReady = _jitoElapsed >= _jitoIdxMs;
+  const _jitoUrlH = _jitoReady && h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
   const _jitoLinkH = _jitoUrlH
     ? ` \u00a0\u00b7\u00a0 <a href="${_jitoUrlH}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:var(--fs-base)" title="Open this bundle on Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
-    : '';
+    : (h.jitoBundleId && !_jitoReady ? ` \u00a0\u00b7\u00a0 <span style="color:#6B6B8A;font-size:var(--fs-base)" title="Jito Explorer indexes transactions within ~1 minute of block landing. The link will activate shortly.">&#x23F3; Jito indexing\u2026</span>` : '');
   const solscanLink = h.signature
     ? `<a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" style="color:var(--green);text-decoration:none">${h.jitoTipSig ? 'Swap ↗' : 'View on Solscan'}</a>`
       + (h.jitoTipSig ? ` <a href="https://solscan.io/tx/${escapeHtml(h.jitoTipSig)}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:var(--fs-base)">Jito tip ↗</a>` : '')
@@ -636,5 +639,12 @@ function loadActivity() {
 
     el.innerHTML = html || '<div class="analysis-empty">No activity yet.<br>Use the Swap tab or visit jup.ag.</div>';
     if (hasCards) _wireTooltips(el);
+    // Auto-refresh when Jito bundle links finish indexing (~90s after submit)
+    const _jitoIdxMs = 90_000;
+    const _jitoPend = history.filter(h => h.jitoBundleId && h.jitoBundleSubmittedAt && (Date.now() - h.jitoBundleSubmittedAt < _jitoIdxMs));
+    if (_jitoPend.length) {
+      const _minRem = Math.min(..._jitoPend.map(h => _jitoIdxMs - (Date.now() - h.jitoBundleSubmittedAt)));
+      setTimeout(loadActivity, _minRem + 500);
+    }
   });
 }

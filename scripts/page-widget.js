@@ -563,10 +563,13 @@
               if (!h || typeof h !== 'object') return '';
               const agoSecs = Math.round((Date.now() - (h.timestamp||0)) / 1000);
               const ago = agoSecs < 60 ? agoSecs+'s ago' : agoSecs < 3600 ? Math.round(agoSecs/60)+'m ago' : Math.round(agoSecs/3600)+'h ago';
-              const _jitoUrlW = h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
+              const _jitoIdxMsW = 90_000;
+              const _jitoElapsedW = h.jitoBundleSubmittedAt ? Date.now() - h.jitoBundleSubmittedAt : _jitoIdxMsW + 1;
+              const _jitoReadyW = _jitoElapsedW >= _jitoIdxMsW;
+              const _jitoUrlW = _jitoReadyW && h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
               const _jitoLinkW = _jitoUrlW
                 ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlW}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:12px" title="Open this bundle on Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
-                : '';
+                : (h.jitoBundleId && !_jitoReadyW ? `\u00a0\u00b7\u00a0<span style="color:#6B6B8A;font-size:12px" title="Jito Explorer indexes transactions within ~1 minute of block landing. The link will activate shortly.">&#x23F3; Jito indexing\u2026</span>` : '');
               const solscanLink = h.signature
                 ? `<a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" style="color:#14F195;text-decoration:none">${h.jitoTipSig ? 'Swap \u2197' : 'View on Solscan'}</a>`
                   + (h.jitoTipSig ? `\u00a0<a href="https://solscan.io/tx/${escapeHtml(h.jitoTipSig)}" target="_blank" style="color:#C2C2D4;text-decoration:none;font-size:12px">Jito tip \u2197</a>` : '')
@@ -763,6 +766,17 @@
             }).join('')
           : `<div style="font-size:12px;color:#C2C2D4;text-align:center;padding:8px 0;line-height:1.6">No activity yet.<br>Complete a swap to start monitoring.</div>`}
       </div>`;
+
+    // Auto-refresh Activity tab when Jito bundle links finish indexing (~90s after submit)
+    {
+      const _jitoIdxMs = 90_000;
+      const _jitoP = ns.recentSwaps.filter(h => h.jitoBundleId && h.jitoBundleSubmittedAt && (Date.now() - h.jitoBundleSubmittedAt < _jitoIdxMs));
+      if (_jitoP.length) {
+        clearTimeout(ns._jitoLinkTimer);
+        const _minRem = Math.min(..._jitoP.map(h => _jitoIdxMs - (Date.now() - h.jitoBundleSubmittedAt)));
+        ns._jitoLinkTimer = setTimeout(() => ns.renderWidgetPanel?.(), _minRem + 500);
+      }
+    }
 
     // Monitor content
     let riskBadgeHtml = '';
@@ -1904,9 +1918,36 @@
             <div style="background:rgba(255,181,71,0.08);border:1px solid rgba(255,181,71,0.35);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
               <div style="color:#FFB547;font-size:13px;font-weight:600">⏱ ${escapeHtml(ns.widgetSwapError)}</div>
             </div>` : ''}
-            <button id="sr-btn-widget-sign" style="width:100%;padding:11px;border:none;border-radius:8px;background:${netNeg ? 'linear-gradient(135deg,#FFB547,#d4922a)' : 'linear-gradient(135deg,#14F195,#0cc97a)'};color:${netNeg ? '#1a0f00' : '#061a10'};font-size:13px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;box-shadow:${netNeg ? '0 3px 12px rgba(255,181,71,0.3)' : '0 3px 12px rgba(20,241,149,0.3)'}">${netNeg ? '⚠ Sign anyway' : '✦ Sign &amp; Send'}</button>
-            ${netNeg ? `<button id="sr-btn-widget-use-jupiter" style="width:100%;padding:11px;margin-top:6px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;box-shadow:0 3px 12px rgba(20,241,149,0.3)">✓ Continue with ${_lqIsRFQ ? 'RFQ fill' : _lqSwapType === 'gasless' ? 'Gasless fill' : 'original route'}</button>` : ''}
-            ${!netNeg && !ns._autoProtectPending && ns.pendingDecisionResolve ? `<button id="sr-btn-widget-use-jupiter" style="width:100%;padding:10px;margin-top:6px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.04);color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif" title="Skip ZendIQ's optimised route and proceed with the original swap instead.">↩ Use original route</button>` : ''}
+            ${(() => {
+              // No real benefit: combined net is essentially zero AND no positive token gain
+              // worth surfacing. In that case there is no point signing a second tx — the
+              // original route gives the same tokens for less fee. Promote "Continue with
+              // original" to primary CTA (green), same as netNeg.
+              const _sameAsOriginal = !netNeg && _netIsDisplayZero && !(tokenGain != null && tokenGain > 0);
+              const _useOrigPrimary = netNeg || _sameAsOriginal;
+              const _canUseOrig     = ns.pendingDecisionResolve != null;
+              const _signLabel      = netNeg ? '⚠ Sign anyway' : (_sameAsOriginal ? '✦ Sign anyway' : '✦ Sign &amp; Send');
+              const _signBg         = netNeg ? 'linear-gradient(135deg,#FFB547,#d4922a)'
+                                    : _sameAsOriginal ? 'rgba(255,255,255,0.04)'
+                                    : 'linear-gradient(135deg,#14F195,#0cc97a)';
+              const _signColor      = netNeg ? '#1a0f00' : (_sameAsOriginal ? '#C2C2D4' : '#061a10');
+              const _signBorder     = _sameAsOriginal ? 'border:1px solid rgba(255,255,255,0.1);' : 'border:none;';
+              const _signShadow     = netNeg ? '0 3px 12px rgba(255,181,71,0.3)'
+                                    : _sameAsOriginal ? 'none'
+                                    : '0 3px 12px rgba(20,241,149,0.3)';
+              const _origLabel      = `✓ Continue with ${_lqIsRFQ ? 'RFQ fill' : _lqSwapType === 'gasless' ? 'Gasless fill' : 'original route'}`;
+              // Render order: when "use original" is the primary CTA, it goes ABOVE Sign.
+              const _signBtn = `<button id="sr-btn-widget-sign" style="width:100%;padding:11px;${_signBorder}border-radius:8px;background:${_signBg};color:${_signColor};font-size:13px;font-weight:${_sameAsOriginal ? 600 : 700};cursor:pointer;font-family:'DM Sans',sans-serif;box-shadow:${_signShadow}">${_signLabel}</button>`;
+              const _origBtnPrimary = _canUseOrig ? `<button id="sr-btn-widget-use-jupiter" style="width:100%;padding:11px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;box-shadow:0 3px 12px rgba(20,241,149,0.3)">${_origLabel}</button>` : '';
+              const _origBtnSecondary = (_canUseOrig && !_useOrigPrimary && !ns._autoProtectPending)
+                ? `<button id="sr-btn-widget-use-jupiter" style="width:100%;padding:10px;margin-top:6px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.04);color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif" title="Skip ZendIQ's optimised route and proceed with the original swap instead.">↩ Use original route</button>`
+                : '';
+              if (_useOrigPrimary) {
+                // Primary on top, sign as secondary below.
+                return _origBtnPrimary + `<div style="margin-top:6px"></div>` + _signBtn;
+              }
+              return _signBtn + _origBtnSecondary;
+            })()}
             <button id="sr-btn-widget-cancel" style="width:100%;padding:8px;margin-top:6px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:transparent;color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">✕ Cancel — click Swap to retry</button>
             <div style="text-align:center;font-size:9px;color:#4A4A6A;margin-top:8px;line-height:1.4">Not financial advice &middot; use at own risk &middot; profit is NOT guaranteed</div>
             <div style="text-align:center;font-size:12px;color:#4A4A6A;margin-top:4px">${(() => {
@@ -2759,10 +2800,15 @@
               html += accHtml;
               html += `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#9B9BAD">`;
               const _isBundledA = h.jitoBundle === true || (h.jitoTipLamports != null && h.jitoTipLamports > 0);
-              const _jitoUrlA = _isBundledA && h.signature ? `https://explorer.jito.wtf/?query=${escapeHtml(h.signature)}` : null;
+              const _jitoIdxMsA = 90_000;
+              const _jitoElapsedA = h.jitoBundleSubmittedAt ? Date.now() - h.jitoBundleSubmittedAt : _jitoIdxMsA + 1;
+              const _jitoReadyA = _jitoElapsedA >= _jitoIdxMsA;
+              const _jitoUrlA = _jitoReadyA && h.jitoBundleId
+                ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}`
+                : (!_jitoReadyA ? null : (_isBundledA && h.signature ? `https://explorer.jito.wtf/bundle-explorer?search=${escapeHtml(h.signature)}` : null));
               const _jitoLinkA = _jitoUrlA
-                ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlA}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:12px" title="Open Jito Explorer to verify atomic execution and that no MEV/sandwich was detected. Click the matching bundle row to see full details.">Verify on Jito \u2197</a>`
-                : '';
+                ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlA}" target="_blank" rel="noopener" style="color:#9945FF;text-decoration:none;font-size:12px" title="Open Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
+                : (h.jitoBundleId && !_jitoReadyA ? `\u00a0\u00b7\u00a0<span style="color:#6B6B8A;font-size:12px" title="Jito Explorer indexes transactions within ~1 minute of block landing. The link will activate shortly.">&#x23F3; Jito indexing\u2026</span>` : '');
               html += h.signature
                 ? `<div style="color:#14F195"><a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" style="color:inherit;text-decoration:none">${h.jitoTipSig ? 'Swap \u2197' : 'View on Solscan'}</a>`
                   + (h.jitoTipSig ? `\u00a0<a href="https://solscan.io/tx/${escapeHtml(h.jitoTipSig)}" target="_blank" style="color:#C2C2D4;text-decoration:none;font-size:12px">Jito tip \u2197</a>` : '')
@@ -2982,10 +3028,13 @@
             }
             // Solscan link (+ Jito Explorer link for bundled trades with captured bundleId)
             if (h.signature) {
-              const _jitoUrlT = h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
+              const _jitoIdxMsT = 90_000;
+              const _jitoElapsedT = h.jitoBundleSubmittedAt ? Date.now() - h.jitoBundleSubmittedAt : _jitoIdxMsT + 1;
+              const _jitoReadyT = _jitoElapsedT >= _jitoIdxMsT;
+              const _jitoUrlT = _jitoReadyT && h.jitoBundleId ? `https://explorer.jito.wtf/bundle/${escapeHtml(h.jitoBundleId)}` : null;
               const _jitoLinkT = _jitoUrlT
                 ? `\u00a0\u00b7\u00a0<a href="${_jitoUrlT}" target="_blank" rel="noopener" style="color:#9945FF;font-size:12px;text-decoration:none" title="Open this bundle on Jito Explorer to verify atomic execution and that no MEV/sandwich was detected.">Verify on Jito \u2197</a>`
-                : '';
+                : (h.jitoBundleId && !_jitoReadyT ? `\u00a0\u00b7\u00a0<span style="color:#6B6B8A;font-size:12px" title="Jito Explorer indexes transactions within ~1 minute of block landing. The link will activate shortly.">&#x23F3; Jito indexing\u2026</span>` : '');
               t += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)"><a href="https://solscan.io/tx/${escapeHtml(h.signature)}" target="_blank" rel="noopener" style="color:#14F195;font-size:12px;text-decoration:none">View on Solscan \u2197</a>${_jitoLinkT}</div>`;
             }
           }

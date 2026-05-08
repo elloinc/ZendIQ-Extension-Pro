@@ -870,6 +870,7 @@
         routeSource: 'pump.fun',
         jitoBundle:          optimized && tipLamports > 0,
         jitoBundleId:        optimized && tipLamports > 0 ? bundleId : null,
+        jitoBundleSubmittedAt: optimized && tipLamports > 0 ? Date.now() : null,
         jitoTipLamports:     optimized && tipLamports > 0 ? tipLamports : null,
         jitoTipUsd:          optimized && tipLamports > 0 ? (tipLamports / 1e9) * solP : null,
         priorityFeeLamports: null, // pumpportal.fun bakes priority fee internally — not separately charged

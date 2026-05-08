@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ZendIQ ? trade.js
  * Trade capture, quote fetching, signing, and the handleOptimiseTrade flow.
  */
@@ -6,6 +6,11 @@
 (function () {
   'use strict';
   const ns = window.__zq;
+
+  // Raydium Jito bundle minimum tip. Tested: 100k and 500k both unreliable
+  // (frequent __bundle_expired__). 1M matches pump.fun's verified-working floor
+  // and is what Jito's docs recommend for consistent inclusion.
+  const _RDM_BUNDLE_TIP_FLOOR = 1_000_000;
 
   // -- extractMintsFromContext ----------------------------------------------
   function extractMintsFromContext(txInfo) {
@@ -140,7 +145,7 @@
         '&amount='     + amountStr +
         '&slippageBps='+ (slippageBps ?? 50) +
         '&txVersion=V0';
-      // pageJsonFetch routes through bridge → background service worker (no CSP restrictions).
+      // pageJsonFetch routes through bridge ? background service worker (no CSP restrictions).
       // Has a 10s internal timeout; Raydium compute is typically < 1s.
       const res = await ns.pageJsonFetch(url);
       // Return the FULL response ? /transaction/swap-base-in needs it as `swapResponse`.
@@ -162,7 +167,7 @@
   // page-trade.js runs in jup.ag's MAIN world so CORS is unrestricted.
   // Tries jup.ag's own snifffed RPC first (it's whitelisted for this origin), then
   // a list of fallbacks. Falls back to _deriveATA only if all fail.
-  // Always call with onChainOnly=false (default) — Raydium requires the output account
+  // Always call with onChainOnly=false (default) ? Raydium requires the output account
   // address even when the account doesn't exist yet, so it can include ATA creation in the TX.
   const _ataCacheOnChain = {}; // tracks which cached addresses are confirmed on-chain
   async function _fetchTokenAccount(walletPubkey, mint, onChainOnly = false) {
@@ -170,7 +175,7 @@
     if (_ataCache[_key] && (!onChainOnly || _ataCacheOnChain[_key])) return _ataCache[_key];
     // Strategy: derive ATA deterministically, then verify with getAccountInfo.
     // getTokenAccountsByOwner is disabled on most free public RPC nodes.
-    // getAccountInfo is a simple single-key lookup — universally supported and goes through
+    // getAccountInfo is a simple single-key lookup ? universally supported and goes through
     // the background service worker so CORS restrictions on the page origin don't apply.
     const _SPL     = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
     const _T22     = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -191,7 +196,7 @@
     // Build candidate addresses to check.
     // When web3.js is available: try both SPL and Token-2022 ATAs (handles both token programs).
     // When web3.js is not available (e.g. raydium.io): fall back to _deriveATA which has a
-    // pure-JS WebCrypto derivation path — SPL only, but covers all common tokens including BONK.
+    // pure-JS WebCrypto derivation path ? SPL only, but covers all common tokens including BONK.
     const _candidates = [];
     if (_PK) {
       for (const _tokenProg of [_SPL, _T22]) {
@@ -204,12 +209,12 @@
         } catch(_) {}
       }
     } else {
-      // No web3.js available — derive SPL ATA via pure-JS fallback
+      // No web3.js available ? derive SPL ATA via pure-JS fallback
       const _splAta = await _deriveATA(walletPubkey, mint).catch(() => null);
       if (_splAta) _candidates.push({ addr: _splAta, label: '(SPL-js)' });
     }
 
-    // Verify each candidate on-chain via getAccountInfo (background worker — no CORS issues)
+    // Verify each candidate on-chain via getAccountInfo (background worker ? no CORS issues)
     for (const { addr: _candidate, label: _label } of _candidates) {
       try {
         const _info = await ns.rpcCall('getAccountInfo', [_candidate, { encoding: 'jsonParsed' }]);
@@ -221,9 +226,9 @@
     }
 
     // On-chain verification failed for all candidates.
-    // onChainOnly=true: caller explicitly asked for verification — skip Raydium cleanly.
+    // onChainOnly=true: caller explicitly asked for verification ? skip Raydium cleanly.
     if (onChainOnly) return null;
-    // Unverified fallback — used for output accounts where Raydium creates the ATA itself.
+    // Unverified fallback ? used for output accounts where Raydium creates the ATA itself.
     const ata = await _deriveATA(walletPubkey, mint);
     if (ata) _ataCache[_key] = ata;
     return ata;
@@ -342,7 +347,7 @@
       };
       if (inputAccount)  body.inputAccount  = inputAccount;
       if (outputAccount) body.outputAccount = outputAccount;
-      // pageJsonPost routes through bridge → background service worker (no CSP restrictions).
+      // pageJsonPost routes through bridge ? background service worker (no CSP restrictions).
       const res = await ns.pageJsonPost(
         'https://transaction-v1.raydium.io/transaction/swap-base-in',
         body, 5000
@@ -402,7 +407,7 @@
   //               swaps in new tx silently, ignores transient errors.
   async function fetchWidgetQuote(silent = false, noAutoAccept = false) {
     if (!ns.widgetCapturedTrade) return;
-    // pump.fun uses bonding-curve fills — no Jupiter order endpoint available
+    // pump.fun uses bonding-curve fills ? no Jupiter order endpoint available
     if (window.location.hostname.includes('pump.fun')) return;
 
     if (!silent) {
@@ -480,10 +485,10 @@
       // have native SOL for fees AFTER wrapping AND must keep its account above the Solana
       // minimum rent-exempt balance (~890,880 lamports).
       //
-      // Bundling path (jitoTip >= 1000): the swap tx carries NO priority fee — bundle
+      // Bundling path (jitoTip >= 1000): the swap tx carries NO priority fee ? bundle
       // ordering is set by the tip tx amount. Reserve = tip lamports + 906_880 (rent floor).
       // Non-bundling path: reserve for worst-case CU price. Raydium routing can use up to
-      // 1.4M CU (7× our 200k assumption), so actual fee can be 7× priorityFeeLamports.
+      // 1.4M CU (7? our 200k assumption), so actual fee can be 7? priorityFeeLamports.
       const _rdmBundling = (ns.jitoMode ?? 'auto') !== 'never';
       const _rdmFeeReserve = (inputMint === _SOL_MINT)
         ? Math.max(1_000_000, (
@@ -500,7 +505,7 @@
         : Promise.resolve(null);
       // Output account: onChainOnly=false (derived ATA is fine; Raydium includes ATA-create CPI).
       // Input account: NOT pre-fetched. Raydium's TX builder derives the standard SPL ATA from
-      // wallet + mint when inputAccount is omitted — avoids REQ_OWNER_ACCOUNT_ERROR from wrong ATAs.
+      // wallet + mint when inputAccount is omitted ? avoids REQ_OWNER_ACCOUNT_ERROR from wrong ATAs.
       const _rdmOutAccP = (_rdmShouldRun && outputMint !== _SOL_MINT && walletPubkey) ? _fetchTokenAccount(walletPubkey, outputMint, false) : Promise.resolve(null);
 
       const url = 'https://lite-api.jup.ag/ultra/v1/order' +
@@ -571,12 +576,12 @@
           //   jupNetOut = jupOut - jupTipCostTokens
           //   winner = rdmNetOut > jupNetOut
           //         = (rdmOut - jupOut) > (rdmTipCostTokens - jupTipCostTokens)
-          // Both sides pay the current calculated Jito tip — use jitoTipLamports directly.
+          // Both sides pay the current calculated Jito tip ? use jitoTipLamports directly.
           // Do NOT use widgetLastOrderFees.jitoTipLamports: that reflects the PREVIOUS order
           // (often 0 for RFQ fills) and would understate Raydium's bundle cost, biasing the
           // comparison in Raydium's favour.
           const _jupTip = jitoTipLamports ?? 0;
-          const _rdmBundleTip = Math.max(_jupTip, 1_000);
+          const _rdmBundleTip = Math.max(_jupTip, _RDM_BUNDLE_TIP_FLOOR);
           // Derive SOL price from the trade if possible, else fall back to the live price
           // stored by the risk module, then the consistent project-wide $80 floor.
           const _solPriceEst =
@@ -594,8 +599,8 @@
           // Credit Raydium with the additional MEV protection value vs Jupiter's route.
           // Raydium Jito bundles protect ~95% of expected MEV loss.
           // Jupiter AMM + Jito protects ~70%; Jupiter AMM without Jito protects 0%.
-          // Jupiter RFQ/gasless is off-chain (no mempool) — full MEV protection (1.0).
-          // Net credit = delta × expected loss in output tokens.
+          // Jupiter RFQ/gasless is off-chain (no mempool) ? full MEV protection (1.0).
+          // Net credit = delta ? expected loss in output tokens.
           // Only applied when mevScore >= 25 (MEDIUM+) to avoid phantom credits on safe pairs.
           const _jupIsRFQ        = order_raw.swapType === 'rfq' || order_raw.swapType === 'gasless';
           const _mevEstLossPct   = ns.lastRiskResult?.mev?.estimatedLossPercentage ?? 0;
@@ -617,7 +622,7 @@
               requestId:            null,   // Raydium: RPC sendTransaction, not Jupiter /execute
               _source:              'raydium',
               _rdmPoolType:         _rdmData.routePlan?.[0]?.poolType ?? null,
-              outAmount:            String(_rdmData.outputAmount),
+              outAmount:            String(Math.floor(_rdmData.outputAmount ?? 0)),
               otherAmountThreshold: String(_rdmData.otherAmountThreshold ?? 0),
               priceImpactPct:       _rdmData.priceImpactPct ?? null,
               routePlan:            _rdmData.routePlan ?? [],
@@ -625,7 +630,7 @@
               inUsdValue:           order_raw.inUsdValue ?? null,
               outUsdValue:          _rdmOutUsd,
             };
-            // Fetch input account now that we know Raydium wins — sequential lookup.
+            // Fetch input account now that we know Raydium wins ? sequential lookup.
             // onChainOnly=true: never returns a _deriveATA-derived address.
             // _deriveATA uses the SPL Token program; Token-2022 ATAs have different addresses
             // and passing the wrong one causes REQ_OWNER_ACCOUNT_ERROR.
@@ -642,12 +647,12 @@
             // Passing null causes REQ_INPUT_ACCOUT_ERROR; passing a wrong derived address
             // (e.g. SPL ATA for a Token-2022 token) causes REQ_OWNER_ACCOUNT_ERROR.
             if (inputMint !== _SOL_MINT && !_inAccForTx) {
-              // Revert to Jupiter order — input account could not be confirmed on-chain.
+              // Revert to Jupiter order ? input account could not be confirmed on-chain.
               order = order_raw;
               ns._rdmSignParams = null;
             } else {
             // Store the compute params needed to re-build a fresh TX at sign time.
-            // Pool state changes every few seconds — a fresh TX build right before signing
+            // Pool state changes every few seconds ? a fresh TX build right before signing
             // ensures the otherAmountThreshold matches the current on-chain price.
             ns._rdmSignParams = {
               inputMint, outputMint, amountStr: _rdmAmountStr,
@@ -685,10 +690,10 @@
       const _isRdmBundleOrder = order._source === 'raydium' && _rdmBundling;
       ns.widgetLastOrderFees       = {
         priorityFeeLamports: (_isNoFeeRoute || _isRdmBundleOrder) ? 0 : (priorityFeeLamports ?? 0),
-        // Raydium bundles always use at least 1 000 lamports (same floor as signWidgetSwap).
-        // Without this, low-risk trades (calcDynamicFees → 0 tip) show no bundle row in
+        // Raydium bundles always use at least _RDM_BUNDLE_TIP_FLOOR lamports (same as signWidgetSwap).
+        // Without this, low-risk trades (calcDynamicFees ? 0 tip) show no bundle row in
         // Review & Sign even though a real bundle is submitted at sign time.
-        jitoTipLamports: _isNoFeeRoute ? 0 : _isRdmBundleOrder ? Math.max(jitoTipLamports ?? 0, 1_000) : (jitoTipLamports ?? 0),
+        jitoTipLamports: _isNoFeeRoute ? 0 : _isRdmBundleOrder ? Math.max(jitoTipLamports ?? 0, _RDM_BUNDLE_TIP_FLOOR) : (jitoTipLamports ?? 0),
       };
 
       // -- Forced AMM re-fetch for MEV protection --------------------------
@@ -762,7 +767,7 @@
           // On raydium.io the live quote comes from our own Raydium compute call, not Jupiter.
           // widgetCapturedTrade.source is set by onWalletArgs; when present, use the Raydium
           // compute output already stored in _rdmSignParams as the real baseline so we compare
-          // ZendIQ's Jupiter order against what Raydium would have given — not Raydium's
+          // ZendIQ's Jupiter order against what Raydium would have given ? not Raydium's
           // slippage floor (minimumAmountOut) which understates the actual output by ~0.5%.
           const _isRdmSite = ns.widgetCapturedTrade?.source === 'raydium';
           if (_isRdmSite && ns._rdmSignParams?._computeOutAmount) {
@@ -774,13 +779,13 @@
           } else if (_isRdmSite && ns._rdmLastComputeOut) {
             // Jupiter wins on raydium.io: ZendIQ serves Jupiter Ultra instead of Raydium.
             // Baseline = Raydium compute output (what user would have gotten without ZendIQ).
-            // Savings = Jupiter Ultra outAmount − Raydium outAmount.
+            // Savings = Jupiter Ultra outAmount - Raydium outAmount.
             // jupiterLiveQuote is null on raydium.io so the normal lq.outAmount path gives null.
             ns.widgetBaselineRawOut = ns._rdmLastComputeOut;
           } else if (_isRdmSite) {
-            // On raydium.io but Raydium compute timed out — no comparison available yet.
+            // On raydium.io but Raydium compute timed out ? no comparison available yet.
             // Use ZendIQ's own order as neutral placeholder so the display shows
-            // '≈ same as original' rather than '—'. The 3s quick re-probe below will
+            // '? same as original' rather than '?'. The 3s quick re-probe below will
             // overwrite this once Raydium compute responds on the retry.
             ns.widgetBaselineRawOut = order.outAmount;
           } else {
@@ -822,7 +827,7 @@
       // Only runs on non-silent first fetch to avoid infinite loops.
       // Skipped for RFQ/gasless (fees already zeroed), jitoMode=always, or when we can't
       // compute savings (no baseline or no output price).
-      // Profitability-cap re-fetch: skipped for Raydium orders — the cap always re-fetches
+      // Profitability-cap re-fetch: skipped for Raydium orders ? the cap always re-fetches
       // via the Jupiter URL and would override a legitimately-winning Raydium order.
       // Raydium route selection already accounts for tip costs symmetrically in the comparison.
       if (!silent && !_isNoFeeRoute && jitoMode !== 'always' && order._source !== 'raydium') {
@@ -897,7 +902,7 @@
       // The decision block below will either open the widget already at 'signing' (normal auto-sign),
       // set 'signing-original' (negative net), or set 'ready' explicitly (token risk pause).
       // This prevents the one-frame Review & Sign flash before signing begins.
-      // Also defer when on raydium.io with a Raydium-source order and autoProtect is active —
+      // Also defer when on raydium.io with a Raydium-source order and autoProtect is active ?
       // the Raydium no-benefit gate below may release the original tx without showing Review & Sign.
       const _isRdmSiteOrderDefer = (ns.widgetCapturedTrade?.source === 'raydium') && ns._autoProtectPending;
       const _deferReady = !silent && !noAutoAccept &&
@@ -907,14 +912,14 @@
         // Skip render only when this is a pre-sign silent re-fetch (B57):
         //   signWidgetSwap pre-sets 'signing' so the handlePendingDecision render shows
         //   the signing card without a Review & Sign flash, and snap values aren't reset.
-        // The 'fetching' case (probeOnly path) must NOT skip — that's the initial background
+        // The 'fetching' case (probeOnly path) must NOT skip ? that's the initial background
         // probe for Always Ask Me, and the render here is what transitions the widget away
-        // from the "Analysing swap…" spinner to show the savings card + Monitor content.
+        // from the "Analysing swap?" spinner to show the savings card + Monitor content.
         // Note: the auto-accept deferred path (B54/B56) never reaches this branch because
         //   _deferReady=true guards it; removing 'fetching' here has no effect on that path.
         // Skip render if a silent fetch completed while the user has already progressed
-        // past 'ready' — e.g. 10s timer fires, user clicks "Continue with original route"
-        // mid-fetch → status becomes 'signing-original'; we must NOT overwrite that state
+        // past 'ready' ? e.g. 10s timer fires, user clicks "Continue with original route"
+        // mid-fetch ? status becomes 'signing-original'; we must NOT overwrite that state
         // with a new Review & Sign panel. Also covers 'signing', 'sending', 'done(-original)'.
         const _BUSY_STATES = ['signing', 'signing-original', 'sending', 'done', 'done-original'];
         const _skipRender = silent && _BUSY_STATES.includes(ns.widgetSwapStatus);
@@ -931,7 +936,7 @@
       if (!silent && !noAutoAccept) {
         if (ns._quickProbeTimer) { clearTimeout(ns._quickProbeTimer); ns._quickProbeTimer = null; }
         // Re-probe when: (a) baseline is null (route-type mismatch on jup.ag), or
-        // (b) on raydium.io and Raydium compute timed out (_rdmLastComputeOut still null) —
+        // (b) on raydium.io and Raydium compute timed out (_rdmLastComputeOut still null) ?
         //     the neutral order.outAmount placeholder was used; retry to get a real comparison.
         const _needProbe = ns.widgetBaselineRawOut === null ||
           (ns.widgetCapturedTrade?.source === 'raydium' && !ns._rdmLastComputeOut);
@@ -1022,17 +1027,17 @@
         // Track whether we're showing Review & Sign specifically because token risk blocked auto-accept.
         // Widget uses this to show an explanatory banner so the user understands why auto-sign paused.
         ns.widgetPausedForToken = (ns.autoAccept === true && _pauseForToken === true);
-        // ── Raydium site: release original tx when ZendIQ adds no net benefit ──────
+        // -- Raydium site: release original tx when ZendIQ adds no net benefit ------
         // When the user is on raydium.io, they're already using Raydium. If ZendIQ's
         // route (whether Raydium or Jupiter) produces no meaningful net gain after fees,
-        // releasing the original Raydium tx is the right UX — the user gets the same
+        // releasing the original Raydium tx is the right UX ? the user gets the same
         // outcome without an extra confirmation step.
         // Only applies when:
         //   (a) we're on the raydium.io site (source === 'raydium')
-        //   (b) ZendIQ picked Raydium (order._source === 'raydium') — same route as original
-        //   (c) _combinedNet is known and ≤ 0 (no net benefit after fees)
+        //   (b) ZendIQ picked Raydium (order._source === 'raydium') ? same route as original
+        //   (c) _combinedNet is known and = 0 (no net benefit after fees)
         // When Jupiter wins on raydium.io (order._source !== 'raydium'), ZendIQ is offering a
-        // genuinely different route → always show Review & Sign.
+        // genuinely different route ? always show Review & Sign.
         const _isRdmSiteOrder = ns.widgetCapturedTrade?.source === 'raydium' && order._source === 'raydium';
         if (_isRdmSiteOrder && _combinedNet != null && _combinedNet <= 0 && ns._autoProtectPending) {
           ns._autoProtectPending = false;
@@ -1164,7 +1169,7 @@
         if (ns.widgetLastOrder && (ns.widgetSwapStatus === 'fetching' || ns.widgetSwapStatus === 'signing')) {
           ns.widgetSwapStatus = 'ready';
         } else if (!ns.widgetLastOrder && ns.widgetSwapStatus === 'fetching') {
-          // Probe failed with no previous quote — unblock the widget so the user can
+          // Probe failed with no previous quote ? unblock the widget so the user can
           // still 'Proceed anyway' or dismiss. Renders the Monitor tab with any risk
           // analysis already computed. (Common on non-jup.ag sites when amount capture fails.)
           ns.widgetSwapStatus = '';
@@ -1225,7 +1230,7 @@
     // handlePendingDecision sets cooldown, clears pending* state, and calls renderWidgetPanel()
     // which now renders the signing card (not Review & Sign).
     // When autoAccept=true, pendingDecisionResolve was already consumed in the auto-accept
-    // decision block before signWidgetSwap() was called — in that case render directly so
+    // decision block before signWidgetSwap() was called ? in that case render directly so
     // the user sees the signing card immediately instead of stale content during the re-fetch.
     if (ns.pendingDecisionResolve) {
       ns.handlePendingDecision('optimise');
@@ -1257,12 +1262,14 @@
       const _sp = ns._rdmSignParams;
       if (_sp) {
         try {
-          // Use a wide slippage tolerance for the TX-build quote.
-          // otherAmountThreshold is a minimum output floor ? Raydium fills at the actual
-          // market price, never at the threshold. Using 500 bps (5%) means the TX survives
-          // normal pool movement during wallet popup latency (5?30 s) without causing a worse
-          // fill. The display/comparison quote still uses the user's real slippage setting.
-          const _txSlippage = 500;
+          // Use wider slippage for TX-build: Jito's block engine simulates against its own
+          // validator state, which can diverge from Raydium's compute API state. Too tight
+          // a minimumAmountOut causes Jito to drop the bundle as Invalid (not Failed).
+          // Use wider slippage for TX-build: Jito's block engine simulates against its own
+          // validator state, which can diverge from Raydium's compute API state. Too tight
+          // a minimumAmountOut causes Jito to drop the bundle as Invalid (not Failed).
+          // The display/comparison quote still uses the user's real slippage setting.
+          const _txSlippage = 100; // 1% slippage floor for the bundle tx minimumAmountOut
           const _freshCompute = await fetchRaydiumQuote(_sp.inputMint, _sp.outputMint, _sp.amountStr, _txSlippage);
           if (_freshCompute?.data?.outputAmount) {
             // Output account: look up at sign time (ATA may have been created since quote).
@@ -1285,7 +1292,7 @@
       // Await background build in case fresh re-fetch above failed
       if (ns._rdmTxPromise) { await ns._rdmTxPromise; ns._rdmTxPromise = null; }
       if (!ns.widgetLastOrder?.transaction) {
-        // TX build failed — fall back to a full widget re-fetch.
+        // TX build failed ? fall back to a full widget re-fetch.
         // If Raydium wins again it will start a new _rdmTxPromise; await it too.
         // If the TX build still fails, force a Jupiter-only re-fetch so we never
         // reach the signing path with an empty txList.
@@ -1298,7 +1305,7 @@
         // pre-sign re-fetch path so the guards below work as intended.
         if (ns.widgetSwapStatus === 'signing') ns.widgetSwapStatus = 'ready';
         if (ns.widgetSwapStatus !== 'ready') return;
-        // Raydium TX build failed twice — skip it on next fetch and use Jupiter
+        // Raydium TX build failed twice ? skip it on next fetch and use Jupiter
         if (ns.widgetLastOrder?._source === 'raydium' && !ns.widgetLastOrder?.transaction) {
           ns._rdmSkipOnce = true;
           await fetchWidgetQuote(true, true);
@@ -1318,7 +1325,7 @@
 
     // -- Step 4: Re-enter 'signing' and render ----------------------------------------------
     ns.widgetSwapStatus = 'signing';
-    // Always make the widget visible before the wallet popup opens — mirrors the
+    // Always make the widget visible before the wallet popup opens ? mirrors the
     // signing-original behavior so the "Approve in wallet" card is shown even if
     // the user closed the widget during the pre-sign re-fetch (~1-2s for Raydium).
     const _sw4 = document.getElementById('sr-widget');
@@ -1489,7 +1496,7 @@
         };
         ns.widgetLastTxFromSwapTab = _cap?.fromSwapTab ?? false;
         ns.widgetSwapStatus    = 'done';
-        // Analytics: swap completed (skippedExecute — wallet signed+sent directly)
+        // Analytics: swap completed (skippedExecute ? wallet signed+sent directly)
         try { if (ns.logProEvent) {
           const _feesSkip = ns.widgetLastOrderFees ?? {};
           const _lpSkip   = ns.widgetLastPriceData ?? {};
@@ -1547,7 +1554,7 @@
 
       // Raydium: 'sending' is set AFTER bundle signing inside the Raydium block below,
       // so the 'signing' card stays visible until the user actually approves in their wallet.
-      // Jupiter: transition to 'sending' here — signedB64 is already in hand.
+      // Jupiter: transition to 'sending' here ? signedB64 is already in hand.
       if (!_isRaydiumTx) {
         ns.widgetSwapStatus = 'sending';
         ns.renderWidgetPanel();
@@ -1571,10 +1578,10 @@
           const errStr = String(data.error ?? '').toLowerCase();
           // -2005 = blockhash expired / requestId TTL elapsed (user took >~60s in wallet popup,
           // or Jupiter's server-side requestId timed out). Recover silently: re-fetch a fresh
-          // quote so the user just has to click "Sign & Send" again — no re-entering anything.
+          // quote so the user just has to click "Sign & Send" again ? no re-entering anything.
           const isStale = code === -2005 || errStr.includes('blockhash') || errStr.includes('expired');
           // Positive on-chain program error codes (>= 100) indicate the tx landed but the
-          // on-chain program rejected it — almost always because the price moved past the swap's
+          // on-chain program rejected it ? almost always because the price moved past the swap's
           // output threshold between quote and execution. Treat the same as an expired quote:
           // silently re-fetch so the user gets a fresh rate and just re-clicks Sign & Send.
           const isOnChainSlippage = typeof code === 'number' && code >= 100;
@@ -1585,14 +1592,14 @@
             await fetchWidgetQuote(false, true);
             if (ns.widgetSwapStatus === 'ready') {
               ns.widgetSwapError  = isOnChainSlippage
-                ? 'Price moved — fresh quote loaded, click Sign & Send again'
-                : 'Quote expired — click Sign & Send again';
+                ? 'Price moved ? fresh quote loaded, click Sign & Send again'
+                : 'Quote expired ? click Sign & Send again';
               ns.widgetSwapStatus = 'ready';
               ns.renderWidgetPanel();
             }
             return;
           }
-          // Unknown on-chain failure — surface a clean, readable message (strip raw tx sig / code).
+          // Unknown on-chain failure ? surface a clean, readable message (strip raw tx sig / code).
           const userMsg = data.error
             ? data.error.replace(/\([A-Za-z0-9]{40,}\)/g, '').replace(/\s{2,}/g, ' ').trim()
             : 'unknown error';
@@ -1647,64 +1654,70 @@
         //
         // Raydium routes always need a Jito tip ? there is no /execute endpoint for them,
         // and without a tip the bundle is deprioritised and frequently "Invalid".
-        // If calcDynamicFees returned no tip (low risk score), use 1_000 lamports as the
-        // minimum so the bundle path is always taken for Raydium, regardless of risk profile.
+        // If calcDynamicFees returned no tip (low risk score), use the _RDM_BUNDLE_TIP_FLOOR
+        // constant as the minimum so the bundle path is always taken for Raydium.
         const _isRdmBundle = ns.widgetLastOrder?._source === 'raydium' && (ns.jitoMode ?? 'auto') !== 'never';
         const _jitoBundleTip = _isRdmBundle
-          ? Math.max(ns.widgetLastOrderFees?.jitoTipLamports ?? 0, 1_000)
+          ? Math.max(ns.widgetLastOrderFees?.jitoTipLamports ?? 0, _RDM_BUNDLE_TIP_FLOOR)
           : (ns.widgetLastOrderFees?.jitoTipLamports ?? 0);
         // widgetLastOrderFees.jitoTipLamports is updated ONLY on confirmed bundle success below
         // (so Activity never shows a tip cost for bundles that fell back to standard RPC).
-        // Wallet pubkey: try multiple sources — ns.walletPubkey may not be set yet at this
+        // Wallet pubkey: try multiple sources ? ns.walletPubkey may not be set yet at this
         // point in the flow; _rdmSignParams is always populated for Raydium orders.
         const _bundleWallet = ns.walletPubkey
           || ns._rdmSignParams?.walletPubkey
           || ns._wsAccount?.address
           || legacyWallet?.publicKey?.toBase58?.()
           || null;
+
+        // -- SOL balance pre-flight for Jito bundle --------------------------------
+        // A Jito bundle requires the fee-payer to have ENOUGH SOL on-chain to cover:
+        //   ? Network base fee:    5_000 lamports per signature (Raydium swap = 1 sig)
+        //   ? Priority fee:        priorityFeeLamports (compute-unit price ? CU limit)
+        //   ? Jito tip:            _jitoBundleTip lamports (separate transfer to tip account)
+        //   ? Rent reserve:        ~890_880 lamports (fee-payer must stay rent-exempt)
+        //   ? SOL spent by swap:   only when input mint = SOL (added by swap tx itself)
+        // If wallet has < required SOL, Jito drops the bundle as 'Invalid' immediately
+        // with no useful error. We HARD-FAIL the swap with a clear SOL-denominated
+        // error message ? no silent fallback. Raydium+Jito is what the user signed up
+        // for; falling back to plain RPC would silently strip MEV protection.
+        if (_isRdmBundle && _bundleWallet) {
+          try {
+            const _balRes = await ns.rpcCall('getBalance', [_bundleWallet, { commitment: 'confirmed' }]);
+            const _balLam = _balRes?.result?.value ?? 0;
+            const _priFee = ns.widgetLastOrderFees?.priorityFeeLamports ?? 0;
+            const _baseFee = 5_000; // 1 signature (tip injected into swap tx — no separate tip tx)
+            const _rentReserve = 890_880;
+            const _required = _baseFee + _priFee + _jitoBundleTip + _rentReserve;
+            const _solIn = (ns.widgetLastOrder?.inputMint === 'So11111111111111111111111111111111111111112')
+              ? Number(ns.widgetLastOrder?.inAmount ?? 0) : 0;
+            const _totalNeeded = _required + _solIn;
+            if (_balLam < _totalNeeded) {
+              const _haveSol   = (_balLam      / 1e9).toFixed(4);
+              const _needSol   = (_totalNeeded / 1e9).toFixed(4);
+              const _shortBySol = ((_totalNeeded - _balLam) / 1e9).toFixed(4);
+              throw new Error(
+                `Insufficient SOL for Jito bundle ? wallet has ${_haveSol} SOL, need ${_needSol} SOL ` +
+                `(short by ${_shortBySol} SOL). Add SOL to your wallet and click Swap again.`
+              );
+            }
+          } catch (_balErr) {
+            // Re-throw insufficient-SOL errors so they reach the widget.
+            if (_balErr.message?.startsWith('Insufficient SOL')) throw _balErr;
+            // Balance lookup itself failed (RPC down). Don't block the trade ? let
+            // the bundle attempt proceed; Jito's response will surface any issue.
+            console.warn('[ZendIQ RDM Bundle] balance check failed:', _balErr.message);
+          }
+        }
+
         if (
           _jitoBundleTip >= 1000
           && (ns.jitoMode ?? 'auto') !== 'never'
           && !_hadRdmSimFail                                // don't bundle on sim-failure recovery
-          && _rdmTxsToSign.length <= 5                      // Jito max: 5 txs per bundle (tip injected, not a separate tx)
+          && _rdmTxsToSign.length === 1                     // single-tx only: tip injected into swap tx; multi-tx falls to standard RPC
           && _bundleWallet                                  // need wallet pubkey for tip
         ) {
           try {
-            // Jito tip accounts — pick one at random to reduce contention (per Jito docs).
-            const _JITO_TIPS = [
-              '96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5',
-              'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
-              'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
-              'ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49',
-              'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh',
-              'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
-              'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
-              '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
-            ];
-            // -- Build a standalone Jito tip tx (separate from Raydium's tx) -------------
-            // Raydium's txs use complex ATL structures. Injecting instructions into them
-            // causes AccountLoadedTwice / InsufficientFunds / 400 errors from Jito.
-            // Instead: keep Raydium's tx completely unmodified and append a plain SOL
-            // transfer to a Jito tip account as a separate tx at the END of the bundle.
-            // Bundle layout: [swapTx1?, swapTx, tipTx] — tip must be last per Jito spec.
-            function _buildRdmTipTx(userB58, blockhashBytes, tipLamports, useV0) {
-              const tipAcct = _JITO_TIPS[Math.floor(Math.random() * _JITO_TIPS.length)];
-              const user    = ns.b58Decode(userB58);
-              const tip     = ns.b58Decode(tipAcct);
-              const sys     = new Uint8Array(32); // SystemProgram — all zeros
-              const _encU64 = (n) => { const b = new Uint8Array(8); let v = BigInt(n); for (let i = 0; i < 8; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
-              const ixData  = new Uint8Array([2, 0, 0, 0, ..._encU64(tipLamports)]);
-              // Jito requires all txs in a bundle to use the same version.
-              const msg = useV0
-                ? [ 0x80, 1, 0, 1, 3, ...user, ...tip, ...sys, ...blockhashBytes,
-                    1, 2, 2, 0, 1, 12, ...ixData, 0 ]
-                : [ 1, 0, 1, 3, ...user, ...tip, ...sys, ...blockhashBytes,
-                    1, 2, 2, 0, 1, 12, ...ixData ];
-              const tx = new Uint8Array(1 + 64 + msg.length);
-              tx[0] = 1; // compact-u16(1) — one signature slot
-              tx.set(msg, 65);
-              return tx;
-            }
             // Parse blockhash + version from the swap tx bytes (read-only, no modification).
             function _parseSwapMeta(txBytes) {
               let p = 0;
@@ -1716,14 +1729,8 @@
               let [nAccts, pKeys] = _cu(txBytes, p); p = pKeys + nAccts * 32;
               return { isV0, blockhash: txBytes.slice(p, p + 32) };
             }
-            // Jito sandwich mitigation: inject a jitodontfront read-only account into each
-            // Raydium swap tx BEFORE the user signs. The block engine rejects any bundle that
-            // places another transaction before the tx containing this account, preventing
-            // front-run / sandwich wrapping. Appended as the last static read-only unsigned
-            // account in the V0 message. Jito's block engine scans all account keys directly —
-            // no need to attach it to any instruction's accounts list (and doing so would
-            // corrupt instructions like SetComputeUnitLimit that expect 0 accounts).
-            // Fails open: returns original base64 unmodified on any parse error.
+            // _injectDontFront removed: tip is now injected into the swap tx via
+            // ns.injectJitoTip (page-jito.js) and submitted as sendTransaction?bundleOnly=true.
             function _injectDontFront(txB64) {
               try {
                 const DF_B58  = 'jitodontfront111111111111111111111111111111';
@@ -1735,7 +1742,7 @@
                 let [nSigs, p2] = _rcu(raw, p); p = p2;
                 const sigSec = raw.slice(0, p + nSigs * 64);
                 p += nSigs * 64;
-                if ((raw[p] & 0x80) === 0) return txB64; // legacy tx — skip
+                if ((raw[p] & 0x80) === 0) return txB64; // legacy tx ? skip
                 p++; // V0 prefix
                 const numReqSigs  = raw[p];
                 const numROSigned = raw[p + 1];
@@ -1798,281 +1805,238 @@
                 return btoa(b64);
               } catch (_e) {
                 console.warn('[ZendIQ] DontFront injection skipped:', _e.message);
-                return txB64; // fail-open — swap proceeds without DontFront
+                return txB64; // fail-open ? swap proceeds without DontFront
               }
             }
             const _lastRdmRaw = Uint8Array.from(atob(_rdmTxsToSign[_rdmTxsToSign.length - 1]), c => c.charCodeAt(0));
-            const { isV0: _rdmIsV0, blockhash: _rdmBlockhash } = _parseSwapMeta(_lastRdmRaw);
-            const _tipTxRaw = _buildRdmTipTx(_bundleWallet, _rdmBlockhash, _jitoBundleTip, _rdmIsV0);
+            const { isV0: _rdmIsV0, blockhash: _rdmStaleBlockhash } = _parseSwapMeta(_lastRdmRaw);
 
-            // Bundle = [Raydium txs with DontFront injected] + tip tx last.
-            // _injectDontFront rewrites unsigned message bytes before wallet signing.
-            const _dontFrontB64 = _rdmTxsToSign.map(_injectDontFront);
-            const _toSignRaw = [
-              ..._dontFrontB64.map(b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0))),
-              _tipTxRaw,
-            ];
-
-            // -- Sign all txs — single wallet confirmation -----------------------------
-            const _wsA  = ns._wsAccount || ns._wsWallet?.accounts?.[0] || null;
-            const _wsSF = ns._wsWallet?.features?.['solana:signTransaction'];
-            let _signedAll = [];
-
-            if (_wsSF?.signTransaction && _wsA) {
-              // Wallet Standard: solana:signTransaction IS variadic ? pass all txs in one call
-              // so the wallet shows a single "Approve N transactions" popup for the whole bundle.
-              const _inputs = _toSignRaw.map(tx => ({ account: _wsA, transaction: tx, chain: 'solana:mainnet' }));
-              let _results;
-              try {
-                _results = await _wsSF.signTransaction(..._inputs);
-              } catch (_e) {
-                if (/reject|cancel|denied|abort/i.test(_e?.message ?? '')) throw new Error('cancelled');
-                throw _e;
-              }
-              _signedAll = _results.map(r => r?.signedTransaction ? new Uint8Array(r.signedTransaction) : null);
-              if (_signedAll.some(b => !b)) throw new Error('bundle: signTransaction returned null bytes');
-              _bundleSignedSwapBytes = _signedAll[_rdmTxsToSign.length - 1] ?? null;
-            } else if (legacyWallet?.signAllTransactions && VersionedTransaction) {
-              // Legacy wallet fallback: needs VersionedTransaction objects ? also one popup.
-              const _objs = _toSignRaw.map(b => VersionedTransaction.deserialize(b));
-              const _res  = await legacyWallet.signAllTransactions(_objs);
-              _signedAll  = _res.map(tx =>
-                tx instanceof Uint8Array ? tx : (tx?.serialize ? new Uint8Array(tx.serialize()) : null)
-              );
-              if (_signedAll.some(b => !b)) throw new Error('bundle: legacy serialisation failed');
-              _bundleSignedSwapBytes = _signedAll[_rdmTxsToSign.length - 1] ?? null;
-            } else {
-              throw new Error('bundle: no Wallet Standard signTransaction or legacy signAllTransactions available');
+            // -- Patch fresh blockhash into ALL Raydium txs + tip tx --------------------
+            // Raydium's compute API returns a tx with a blockhash that may be 5?30s old
+            // by the time the user clicks Sign. Submitting an expiring blockhash to Jito
+            // causes the bundle to be silently dropped (status='Invalid').
+            // Fix: fetch a fresh blockhash NOW and overwrite each tx's blockhash field
+            // BEFORE the wallet signs ? same pattern as page-pump.js _patchFreshBlockhash.
+            // The wallet signs over the new blockhash, so signature verification passes.
+            let _freshBlockhashBytes = _rdmStaleBlockhash;
+            try {
+              // Fetch directly from the page context using ns._jupRpcUrl (sniffed from
+              // Raydium's own live fetch traffic � guaranteed on the same node Raydium
+              // uses, fully synced with chain tip).
+              // ns.rpcCall routes through the background bridge to publicnode.com which
+              // is load-balanced; different nodes can be at different slot heights, making
+              // the 'fresh' blockhash appear BlockhashNotFound on Jito (? Invalid bundle).
+              // Use 'finalized' commitment so the blockhash is guaranteed to be known
+              // by ALL Jito block-engine validators. With 'confirmed', the specific
+              // validator connected to the Frankfurt/SLC block engine may lag 1�5 slots
+              // behind the jup.ag load-balanced RPC, causing 'BlockhashNotFound' during
+              // Jito's internal bundle simulation ? immediate 'Invalid' status.
+              // 'finalized' is ~13s older but still has ~47s of remaining validity, which
+              // is well within the full fetch?sign?submit flow time of <15s.
+              const _bhRpcUrl = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
+              const _bhFetchR = await fetch(_bhRpcUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'finalized' }] }),
+                signal: AbortSignal.timeout(5000)
+              });
+              const _bhJson = await _bhFetchR.json();
+              const _bhStr = _bhJson?.result?.value?.blockhash;
+              if (_bhStr) _freshBlockhashBytes = ns.b58Decode(_bhStr);
+            } catch (_bhE) {
+              console.warn('[ZendIQ RDM Bundle] blockhash fetch failed:', _bhE.message);
             }
 
-            // Wallet approved — transition to 'sending' so the widget shows
-            // "Broadcasting transaction…" during the Jito submission + poll (~3-10s).
+            // Patch the blockhash bytes in-place inside each Raydium tx (locate via
+            // _parseSwapMeta which returns the blockhash slice ? the 32 bytes start at
+            // offset (sigSection + versionByte? + 3 header + nAcctsCU + nAccts*32)).
+            function _patchTxBlockhash(rawBytes, freshBhBytes) {
+              const out = new Uint8Array(rawBytes);
+              let p = 0;
+              const _cu = (buf, pos) => { let v = buf[pos++]; if (v & 0x80) v = (v & 0x7f) | (buf[pos++] << 7); return [v, pos]; };
+              let [nSigs, pSigs] = _cu(out, p); p = pSigs + nSigs * 64;
+              if (out[p] & 0x80) p++; // skip v0 version byte
+              p += 3; // message header (3 bytes)
+              let [nAccts, pKeys] = _cu(out, p); p = pKeys + nAccts * 32;
+              // Now p points at the 32-byte blockhash field
+              for (let i = 0; i < 32; i++) out[p + i] = freshBhBytes[i];
+              return out;
+            }
+
+            const _rdmRawWithFreshBh = _rdmTxsToSign.map(b64 => {
+              const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+              return _patchTxBlockhash(raw, _freshBlockhashBytes);
+            });
+            // -- Inject Jito tip into the (unsigned) swap tx --------------------------------
+            // Jito's recommended approach: embed the tip in the swap tx so the block engine
+            // can forward it as a single-tx bundle. A separate 2-tx bundle (old approach)
+            // required the block engine to resolve Raydium's pool-specific ALTs for atomic
+            // validation — that ALT cache miss caused immediate status='Invalid'. With
+            // sendTransaction?bundleOnly=true the block engine forwards directly to the
+            // next Jito-eligible validator which has full chain state and resolves ALTs locally.
+            const _swapTxUnsigned = _rdmRawWithFreshBh[0];
+            const _injectedTxRaw  = await ns.injectJitoTip(_swapTxUnsigned, _jitoBundleTip);
+            if (!_injectedTxRaw) {
+              console.error('[ZendIQ RDM Bundle] tip injection failed — falling back to Jupiter route');
+              _hadRdmSimFail = true;
+              throw new Error('__rdm_sim_fallback__');
+            }
+
+            // -- Pre-sign simulation: diagnose injection vs ALT-cache issues ----------------
+            // Run with sigVerify=false + replaceRecentBlockhash=true so the unsigned tx can
+            // be simulated. ALT/BlockhashNotFound errors are RPC cache false-positives (the
+            // tx will still land on-chain). Any InstructionError means a real tx body issue.
+            try {
+              let _preSimB64 = '';
+              for (let i = 0; i < _injectedTxRaw.length; i++) _preSimB64 += String.fromCharCode(_injectedTxRaw[i]);
+              _preSimB64 = btoa(_preSimB64);
+              const _psd = await ns.rpcCall('simulateTransaction',
+                [_preSimB64, { encoding: 'base64', commitment: 'processed', sigVerify: false, replaceRecentBlockhash: true }]);
+              const _psv = _psd?.result?.value;
+              if (_psv?.err) {
+                const _psErr = JSON.stringify(_psv.err);
+                if (/AccountNotFound|BlockhashNotFound|NodeBehindLastValid|AddressLookupTable|sanitize accounts offsets/i.test(_psErr)) {
+                  // 'sanitize accounts offsets' = RPC doesn't have the Raydium pool ATL loaded;
+                  // validator has full chain state and resolves it — safe to proceed.
+                  console.warn('[ZendIQ RDM PreSim] ALT/RPC cache miss (expected for Raydium V0 txs \u2014 wallet simulation may show "failed" but tx will land on-chain):', _psErr);
+                } else {
+                  console.error('[ZendIQ RDM PreSim] REAL SIM FAILURE \u2014 tx body issue:', _psErr);
+                  if (_psv.logs?.length) console.error('[ZendIQ RDM PreSim] logs:', _psv.logs.slice(-10));
+                  // Don't abort here — let the user decide via wallet popup; log is the key output.
+                }
+              } else if (!_psd?.error) {
+              }
+            } catch (_psE) { console.warn('[ZendIQ RDM PreSim] rpcCall failed:', _psE.message); }
+
+            // -- Sign the single injected tx (one wallet popup) ------------------------------
+            // NOTE: The wallet may show "Simulation failed" — this is expected for Raydium V0
+            // transactions. The simulation RPC does not have the Raydium pool ATL cached; actual
+            // on-chain validators DO resolve it. Click Confirm to proceed.
+            const _wsA  = ns._wsAccount || ns._wsWallet?.accounts?.[0] || null;
+            const _wsSF = ns._wsWallet?.features?.['solana:signTransaction'];
+            let _signedInjected = null;
+            // _bundleSignInFlight prevents the DEX from broadcasting a parallel plain-RPC
+            // tx while the wallet prompt is open. __zendiq_own_tx (set above) ensures our
+            // own signTransaction call still passes through the wallet hooks.
+            ns._bundleSignInFlight = true;
+            try {
+              if (_wsSF?.signTransaction && _wsA) {
+                let _result;
+                try { _result = await _wsSF.signTransaction({ account: _wsA, transaction: _injectedTxRaw, chain: 'solana:mainnet' }); }
+                catch (_e) { if (/reject|cancel|denied|abort/i.test(_e?.message ?? '')) throw new Error('cancelled'); throw _e; }
+                // Wallet Standard signTransaction always returns ReadonlyArray<{ signedTransaction }>
+                // regardless of input count — unwrap the array before accessing signedTransaction.
+                const _out = Array.isArray(_result) ? _result[0] : _result;
+                _signedInjected = _out?.signedTransaction ? new Uint8Array(_out.signedTransaction) : null;
+                if (!_signedInjected) throw new Error('bundle: signTransaction returned null bytes (result: ' + JSON.stringify(_result)?.slice(0, 120) + ')');
+              } else if (legacyWallet?.signTransaction && VersionedTransaction) {
+                const _obj = VersionedTransaction.deserialize(_injectedTxRaw);
+                const _res = await legacyWallet.signTransaction(_obj);
+                _signedInjected = _res instanceof Uint8Array ? _res : (_res?.serialize ? new Uint8Array(_res.serialize()) : null);
+                if (!_signedInjected) throw new Error('bundle: legacy serialisation failed');
+              } else {
+                throw new Error('bundle: no Wallet Standard signTransaction or legacy signTransaction available');
+              }
+            } finally {
+              ns._bundleSignInFlight = false;
+            }
+            _bundleSignedSwapBytes = _signedInjected;
+            if (_signedInjected?.length > 65) rpcSig = ns.b58Encode(_signedInjected.slice(1, 65));
+
             ns.widgetSwapStatus = 'sending';
             ns.renderWidgetPanel();
 
-            // -- Encode signed txs as base64 for Jito ----------------------------------
-            const _bundleB64 = _signedAll.map(raw => {
-              let bin = ''; for (let i = 0; i < raw.length; i++) bin += String.fromCharCode(raw[i]);
-              return btoa(bin);
-            });
+            // Encode signed tx as base64 for simulation + submission.
+            let _injB64 = '';
+            for (let i = 0; i < _signedInjected.length; i++) _injB64 += String.fromCharCode(_signedInjected[i]);
+            _injB64 = btoa(_injB64);
 
-            // -- Pre-submit: simulate swap TX to catch obvious failures before wasting a Jito slot ---
-            // NOTE: Raydium V0 txs use ALTs; many RPC nodes return simulation errors for ALT-heavy
-            // txs even when they would succeed on-chain (node hasn't loaded ALT data into cache).
-            // Simulation result is therefore DIAGNOSTIC ONLY — we log it but never abort on it.
-            // Real on-chain failure detection is handled by the getSignatureStatuses check below.
+            // -- Post-sign: blockhash replacement detection -----------------------------------
             try {
-              const _simUrl = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
-              const _simR = await fetch(_simUrl, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'simulateTransaction',
-                  params: [_bundleB64[_bundleB64.length - 2], { encoding: 'base64', commitment: 'confirmed', replaceRecentBlockhash: true }] })
-              });
-              const _simD = await _simR.json();
-              const _simErr = _simD?.result?.value?.err;
-              if (_simErr) {
-                const _simErrStr = JSON.stringify(_simErr);
-                // Deterministic failures — will ALWAYS fail on-chain regardless of skipPreflight.
-                // Abort now and let Jupiter execute instead.
-                //   AccountLoadedTwice   = tip injection added an account already in ATL
-                //   InsufficientFunds*   = 100%-SOL swap left no lamports for the injected tip
-                if (_simErrStr.includes('AccountLoadedTwice') ||
-                    /insufficient.{0,30}(lamport|fund|fee|rent)/i.test(_simErrStr)) {
-                  _hadRdmSimFail = true;
-                  throw new Error('__rdm_sim_fallback__');
-                }
-                // Non-deterministic errors (ALT cache misses, custom program pre-checks)
-                // may still land fine on-chain with skipPreflight. Log only.
-                console.warn('[ZendIQ] Raydium bundle sim warning (may be ALT cache miss):', _simErrStr);
+              const _readBh = (raw) => {
+                let p = 0;
+                const _cu = (b, pos) => { let v = b[pos++]; if (v & 0x80) v = (v & 0x7f) | (b[pos++] << 7); return [v, pos]; };
+                let [nS, p1] = _cu(raw, p); p = p1 + nS * 64;
+                if (raw[p] & 0x80) p++; p += 3;
+                let [nK, p2] = _cu(raw, p); p = p2 + nK * 32;
+                return Array.from(raw.slice(p, p + 32)).map(b => b.toString(16).padStart(2, '0')).join('');
+              };
+              const _patchedBhHex = Array.from(_freshBlockhashBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+              const _signedBhHex  = _readBh(_signedInjected);
+              if (_patchedBhHex !== _signedBhHex) {
+                console.warn('[ZendIQ RDM Bundle] \u26a0 Wallet replaced finalized blockhash \u2014 bundleOnly validator may lag');
               }
-            } catch (_simEx) {
-              if (_simEx.message === '__rdm_sim_fallback__') throw _simEx;
+            } catch (_bhE) { console.warn('[ZendIQ RDM Bundle] blockhash verify error:', _bhE.message); }
+
+
+
+            // -- Simulate signed tx before submitting ---------------------------------
+            // sigVerify=true catches wallet key mismatches; sigVerify=false isolates body errors.
+            try {
+              const _sd = await ns.rpcCall('simulateTransaction',
+                [_injB64, { encoding: 'base64', commitment: 'processed', sigVerify: true, replaceRecentBlockhash: false }]);
+              const _sv = _sd?.result?.value;
+              if (_sd?.error) {
+                console.error('[ZendIQ RDM BundleSim] RPC error:', JSON.stringify(_sd.error));
+              } else if (_sv?.err) {
+                console.error('[ZendIQ RDM BundleSim] SIM FAILED (sigVerify=T):', JSON.stringify(_sv.err));
+                const _sd2 = await ns.rpcCall('simulateTransaction',
+                  [_injB64, { encoding: 'base64', commitment: 'processed', sigVerify: false, replaceRecentBlockhash: true }]);
+                const _sv2    = _sd2?.result?.value;
+                const _simStr = JSON.stringify(_sv2?.err ?? _sv?.err ?? '');
+                if (_sv2?.err) {
+                  if (!/AccountNotFound|BlockhashNotFound|NodeBehindLastValid/i.test(_simStr)) {
+                    console.error('[ZendIQ RDM BundleSim] tx body broken \u2014 aborting:', _simStr);
+                    _hadRdmSimFail = true; throw new Error('__rdm_sim_fallback__');
+                  }
+                  console.warn('[ZendIQ RDM BundleSim] RPC false positive (ALT/blockhash cache):', _simStr);
+                } else if (!_sd2?.error) {
+                  if (/BlockhashNotFound/i.test(JSON.stringify(_sv?.err ?? ''))) {
+                    console.warn('[ZendIQ RDM BundleSim] BlockhashNotFound in sigVerify=T \u2014 RPC lag, proceeding');
+                  } else {
+                    console.error('[ZendIQ RDM BundleSim] wallet sig does not verify \u2014 aborting');
+                    _hadRdmSimFail = true; throw new Error('__rdm_sim_fallback__');
+                  }
+                }
+              } else {
+              }
+            } catch (_simErr) {
+              if (_simErr.message === '__rdm_sim_fallback__') throw _simErr;
+              console.warn('[ZendIQ RDM BundleSim] rpcCall failed:', _simErr.message);
             }
-            // -- Submit to Jito -------------------------------------------------------
-            // Single-tx path (most Raydium swaps): use sendTransaction?bundleOnly=true —
-            // same approach as pump.fun. Returns a real sig in data.result and the bundle
-            // ID in the x-bundle-id response header. No separate bundle status polling
-            // needed beyond polling the sig on RPC.
-            // Multi-tx path (ATA-create + swap): must use /bundles (accepts array).
-            const _isSingleBundle = false; // always use /bundles — bundleOnly=true rejected Raydium ATL txs
-            const _JITO_BASE_URLS = [
-              'https://amsterdam.mainnet.block-engine.jito.wtf',
-              'https://ny.mainnet.block-engine.jito.wtf',
-              'https://frankfurt.mainnet.block-engine.jito.wtf',
-              'https://tokyo.mainnet.block-engine.jito.wtf',
-              'https://london.mainnet.block-engine.jito.wtf',
-              'https://dublin.mainnet.block-engine.jito.wtf',
-              'https://slc.mainnet.block-engine.jito.wtf',
-              'https://singapore.mainnet.block-engine.jito.wtf',
-              'https://mainnet.block-engine.jito.wtf',
-            ];
 
-            // Extract swap tx sig from signed bytes (bytes 1-64 after compact-u16 sig count).
-            // Tip tx is last in _signedAll; swap tx is at index [_rdmTxsToSign.length - 1].
-            const _swapRaw = _signedAll[_rdmTxsToSign.length - 1];
-            if (_swapRaw?.length > 65) rpcSig = ns.b58Encode(_swapRaw.slice(1, 65));
-            const _jitoTipSig = null; // tip is a separate tx in the bundle, no ZendIQ tracking needed
-
+            // -- Submit via sendTransaction?bundleOnly=true ---------------------------
+            // Single-tx: block engine forwards directly to next Jito-eligible validator;
+            // no multi-tx atomic ALT resolution required at the block-engine level.
             let _bundleId = null;
-            let _jitoBase = null;
 
-            if (_isSingleBundle) {
-              // ── Single-tx: sendTransaction?bundleOnly=true (pump.fun approach) ──────
-              const _swapB64 = _bundleB64[0];
-              const _body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendTransaction',
-                params: [_swapB64, { encoding: 'base64' }] });
-              const _tryEndpoint = async (base) => {
-                const url = base + '/api/v1/transactions?bundleOnly=true';
-                const r = await fetch(url, { method: 'POST',
-                  headers: { 'Content-Type': 'application/json' }, body: _body,
-                  signal: AbortSignal.timeout(8000) });
-                const d = await r.json();
-                const bid = r.headers.get('x-bundle-id') ?? null;
-                if (d?.result) return { sig: d.result, bundleId: bid, base };
-                throw new Error(JSON.stringify(d?.error ?? 'no result'));
-              };
-              let _st;
-              try {
-                _st = await Promise.any(_JITO_BASE_URLS.map(_tryEndpoint));
-              } catch (_) {
-                throw new Error('Jito: all regional endpoints unavailable (429/503/timeout)');
-              }
-              if (_st.sig) rpcSig = _st.sig; // authoritative sig from Jito response
-              _bundleId = _st.bundleId;
-              _jitoBase = _st.base;
 
-              // Poll RPC for confirmation — same as pump.fun.
-              // Sig came directly from Jito so we know it's the right one.
-              let _confirmed = false;
-              const _rpcUrl  = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
-              for (let _pi = 0; _pi < 20 && !_confirmed; _pi++) {
-                await new Promise(r => setTimeout(r, 1000));
-                try {
-                  const _r = await fetch(_rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[rpcSig]] }) });
-                  const _d = await _r.json();
-                  const _sv = _d?.result?.value?.[0];
-                  if (_sv && !_sv.err) { _confirmed = true; _jitoBundleOk = true; break; }
-                  if (_sv?.err) { _hadRdmSimFail = true; throw new Error('__rdm_sim_fallback__'); }
-                  // null = not yet seen, keep polling
-                } catch (_pe) { if (_pe.message === '__rdm_sim_fallback__') throw _pe; }
-              }
-              if (!_confirmed) throw new Error('__bundle_expired__');
-
-            } else {
-              // ── Multi-tx: /bundles (ATA-create + swap) ───────────────────────────────
-              const _BUNDLE_ENDPOINTS = _JITO_BASE_URLS.map(b => b + '/api/v1/bundles');
-              const _jitoPayload = { jsonrpc: '2.0', id: 1, method: 'sendBundle',
-                params: [_bundleB64, { encoding: 'base64' }] };
-              const _tryBundle = async (url) => {
-                const d = await ns.pageJsonPost(url, _jitoPayload, 4000);
-                if (d?.result) return { result: d.result, endpoint: url };
-                throw new Error(JSON.stringify(d?.error ?? 'no result'));
-              };
-              let _jitoResult;
-              try {
-                _jitoResult = await Promise.any(_BUNDLE_ENDPOINTS.map(_tryBundle));
-              } catch (_) {
-                throw new Error('Jito: all regional endpoints unavailable (429/503/timeout)');
-              }
-              _bundleId = _jitoResult.result;
-              _jitoBase = _jitoResult.endpoint.replace('/api/v1/bundles', '');
-
-              if (_bundleId) {
-                const _INFLIGHT_URL = _jitoBase + '/api/v1/getInflightBundleStatuses';
-                const _STATUSES_URL = _jitoBase + '/api/v1/getBundleStatuses';
-
-                // Step 1: getInflightBundleStatuses
-                const _inflightBody = { jsonrpc: '2.0', id: 1, method: 'getInflightBundleStatuses', params: [[_bundleId]] };
-                for (let _pi = 0; _pi < 12; _pi++) {
-                  await new Promise(r => setTimeout(r, 500));
-                  try {
-                    const _sd = await ns.pageJsonPost(_INFLIGHT_URL, _inflightBody);
-                    const _sv = _sd?.result?.value?.[0];
-                    if (!_sv) continue;
-                    if (_sv.status === 'Landed') { _jitoBundleOk = true; break; }
-                    if (_sv.status === 'Failed') throw new Error('Jito bundle failed on-chain -- please retry');
-                  } catch (_pollErr) {
-                    if (_pollErr.message.startsWith('Jito bundle failed')) throw _pollErr;
-                  }
-                }
-
-                // Step 2: getBundleStatuses
-                if (!_jitoBundleOk) {
-                  try {
-                    const _gbsBody = { jsonrpc: '2.0', id: 1, method: 'getBundleStatuses', params: [[_bundleId]] };
-                    const _gbsD = await ns.pageJsonPost(_STATUSES_URL, _gbsBody, 4000);
-                    const _gbsV = _gbsD?.result?.value?.[0];
-                    if (_gbsV?.confirmation_status) {
-                      if (_gbsV.transactions?.[0]) rpcSig = _gbsV.transactions[0];
-                      _jitoBundleOk = true;
-                    }
-                  } catch (_) {}
-                }
-
-                // Step 3: direct RPC sig check
-                if (!_jitoBundleOk && rpcSig) {
-                  try {
-                    const _rpcUrl = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
-                    const _r = await fetch(_rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[rpcSig]] }) });
-                    const _d = await _r.json();
-                    const _sigStatus = _d?.result?.value?.[0];
-                    if (_sigStatus && !_sigStatus.err) {
-                      _jitoBundleOk = true;
-                    } else if (_sigStatus === null) {
-                      const _signedSwapFb = _signedAll[_rdmTxsToSign.length - 1];
-                      let _fbOk = false;
-                      if (_signedSwapFb) {
-                        try {
-                          let _fbBin = ''; for (let _i = 0; _i < _signedSwapFb.length; _i++) _fbBin += String.fromCharCode(_signedSwapFb[_i]);
-                          const _fbB64 = btoa(_fbBin);
-                          const _fbRpc = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
-                          const _fbR = await fetch(_fbRpc, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendTransaction',
-                              params: [_fbB64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }] }) });
-                          const _fbD = await _fbR.json();
-                          if (_fbD?.result) {
-                            rpcSig = _fbD.result;
-                            for (let _ci = 0; _ci < 8; _ci++) {
-                              await new Promise(r => setTimeout(r, 1500));
-                              try {
-                                const _cr = await fetch(_fbRpc, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignatureStatuses', params: [[rpcSig]] }) });
-                                const _cd = await _cr.json();
-                                const _cv = _cd?.result?.value?.[0];
-                                if (_cv && !_cv.err) { _fbOk = true; _jitoBundleOk = true; break; }
-                                if (_cv?.err) throw new Error('__rdm_sim_fallback__');
-                              } catch (_cErr) { if (_cErr.message === '__rdm_sim_fallback__') throw _cErr; }
-                            }
-                          }
-                        } catch (_fbErr) { if (_fbErr.message === '__rdm_sim_fallback__') throw _fbErr; }
-                      }
-                      if (!_fbOk) throw new Error('__bundle_expired__');
-                    } else if (_sigStatus && _sigStatus.err) {
-                      _hadRdmSimFail = true;
-                      throw new Error('__rdm_sim_fallback__');
-                    }
-                  } catch (_rpcErr) {
-                    if (_rpcErr.message === '__bundle_expired__') throw _rpcErr;
-                  }
-                }
-                if (!_jitoBundleOk) throw new Error('__bundle_expired__');
-              }
+            try {
+              const _jitoResult = await ns.submitJitoBundleOnly(_injB64);
+              rpcSig    = _jitoResult.sig;
+              _bundleId = _jitoResult.bundleId;
+            } catch (_jErr) {
+              console.error('[ZendIQ RDM Bundle] all Jito endpoints rejected:', _jErr.message);
+              throw new Error('Jito: all regional endpoints unavailable \u2014 please retry');
             }
 
-            data = { status: 'Success', signature: rpcSig, jitoTipSig: _jitoTipSig ?? null, bundleId: _bundleId ?? null };
-            // Safety: if _jitoBundleTip was somehow raised above what fetchWidgetQuote stored
-            // (e.g. a future code path), record the actual tip paid so Activity stays accurate.
+            // -- Poll for on-chain confirmation (max 30s) ----------------------------
+            const _rpcPollUrl = ns._jupRpcUrl || 'https://api.mainnet-beta.solana.com';
+            const _confirmResult = await ns.awaitJitoSigConfirmation(rpcSig, _rpcPollUrl, 30000);
+
+            if (!_confirmResult) {
+              console.error('[ZendIQ RDM Bundle] TIMEOUT \u2014 bundle did not land within 30s');
+              throw new Error('__bundle_expired__');
+            }
+            _jitoBundleOk = true;
+            data = { status: 'Success', signature: rpcSig, jitoTipSig: null, bundleId: _bundleId ?? null };
             if (ns.widgetLastOrderFees && _jitoBundleTip > (ns.widgetLastOrderFees.jitoTipLamports ?? 0)) {
               ns.widgetLastOrderFees = { ...ns.widgetLastOrderFees, jitoTipLamports: _jitoBundleTip };
             }
           } catch (jitoErr) {
             if (/reject|cancel|denied|abort/i.test(jitoErr?.message ?? '')) throw new Error('cancelled');
             if (jitoErr?.message === '__bundle_expired__') throw jitoErr;
-            if (jitoErr?.message?.startsWith('Jito bundle failed')) throw jitoErr;
             if (jitoErr?.message === '__rdm_sim_fallback__') throw jitoErr;
-            // Any other unexpected Jito error — surface it to the user, no silent fallback.
+            // Any other unexpected Jito error \u2014 surface it to the user, no silent fallback.
             throw jitoErr;
           }
         }
@@ -2112,6 +2076,8 @@
           solscanUrl:  sig ? ('https://solscan.io/tx/' + sig) : null,
           jitoTipSig:  data?.jitoTipSig ?? null,
           jitoBundle:  !!(data?.bundleId || data?.jitoTipSig),
+          jitoBundleId: data?.bundleId ?? null,
+          jitoBundleSubmittedAt: data?.bundleId ? Date.now() : null,
           // Fee / risk / savings metadata
           priorityFeeLamports: ns.widgetLastOrderFees?.priorityFeeLamports ?? ns.PRIORITY_FEE_LOW,
           jitoTipLamports:     ns.widgetLastOrderFees?.jitoTipLamports ?? 0,
@@ -2146,7 +2112,7 @@
           // estSavingsTokens: removed ? price-impact formula was producing phantom savings
           // that never matched Activity. Savings are either from baseline comparison or null.
           estSavingsTokens: null,
-          // Sandwich detection result — null = check in progress (resolved async via HISTORY_UPDATE).
+          // Sandwich detection result ? null = check in progress (resolved async via HISTORY_UPDATE).
           // Field is omitted entirely for RFQ/gasless routes (no AMM pool, no sandwich possible).
           ...(lastOrder.swapType !== 'rfq' && lastOrder.swapType !== 'gasless' ? { sandwichResult: null } : {}),
           // USD price data for savings breakdown tooltip
@@ -2228,7 +2194,7 @@
           })();
         }
 
-        // Sandwich detection — fire-and-forget, AMM trades only (RFQ/gasless have no mempool)
+        // Sandwich detection ? fire-and-forget, AMM trades only (RFQ/gasless have no mempool)
         if (sig && ns.detectSandwich && captured?.inputMint && captured?.outputMint
             && lastOrder.swapType !== 'rfq' && lastOrder.swapType !== 'gasless') {
           // Capture ns state synchronously before any await (ns vars get nulled after this try block)
@@ -2290,20 +2256,79 @@
         }
         return;
       }
-      if (e.message === '__bundle_expired__') {
-        // Jito bundle blockhash expired. signWidgetSwap Step 3 already rebuilds a fresh
-        // Raydium TX + blockhash via fetchRaydiumQuote + fetchRaydiumTx, so retry directly.
-        // Do NOT call fetchWidgetQuote here ? that re-runs the Raydium vs Jupiter comparison
-        // and can switch to Jupiter if Raydium's API responds slower than the 1.5s deadline,
-        // which is exactly the wrong behaviour for a bundle retry.
-        if (retryCount < 2) {
-          ns._rdmSkipOnce = false;
-          signWidgetSwap(retryCount + 1);
-        } else {
-          ns.widgetSwapError  = 'Bundle failed after 3 attempts \u2014 please try again';
-          ns.widgetSwapStatus = 'error';
-          ns.renderWidgetPanel();
+      if (e.message === '__bundle_not_atomic__') {
+        // Swap tx confirmed on-chain but Jito bundle inclusion not verified.
+        // The swap ALREADY EXECUTED \u2014 do NOT show Retry (would cause a double-swap).
+        const _naSig     = ns._bundleNotAtomicSig ?? null;
+        ns._bundleNotAtomicSig = null;
+        const _naCapture = ns.widgetCapturedTrade;
+        if (_naSig && _naCapture) {
+          const _naLq   = ns.jupiterLiveQuote;
+          const _naRisk = ns.lastRiskResult ?? null;
+          const _naEntry = {
+            signature:      _naSig,
+            tokenIn:        _naCapture.inputSymbol  ?? '?',
+            tokenOut:       _naCapture.outputSymbol ?? '?',
+            amountIn:       _naCapture.amountUI != null ? String(_naCapture.amountUI) : null,
+            amountOut:      null,
+            quotedOut:      null,
+            optimized:      false,
+            timestamp:      Date.now(),
+            inputMint:      _naCapture.inputMint  ?? null,
+            outputMint:     _naCapture.outputMint ?? null,
+            outputDecimals: _naCapture.outputDecimals ?? 6,
+            rawOutAmount:   null,
+            swapType:       'amm',
+            routeSource:    'raydium',
+            riskScore:      _naRisk?.score  ?? null,
+            riskLevel:      _naRisk?.level  ?? null,
+            riskFactors:    _naRisk?.factors ?? [],
+            mevFactors:     _naRisk?.mev?.factors ?? [],
+            mevRiskLevel:   _naRisk?.mev?.riskLevel ?? null,
+            mevRiskScore:   _naRisk?.mev?.riskScore ?? null,
+            inUsdValue:     _naLq?.inUsdValue  ?? null,
+            outUsdValue:    _naLq?.outUsdValue ?? null,
+          };
+          try { window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: _naEntry } }, '*'); } catch (_) {}
         }
+        ns.widgetSnapBaselineRawOut   = null;
+        ns.widgetSnapNetUsd           = null;
+        ns.widgetSnapSavingsUsd       = null;
+        ns.widgetSnapMevProtectionUsd = null;
+        ns.widgetOriginalTxSig = _naSig;
+        ns.widgetLastTxSig     = _naSig;
+        ns.widgetSwapStatus    = 'done-original';
+        ns.widgetActiveTab     = 'monitor';
+        ns._bundleNotAtomicNote = 'Swap executed \u2014 Jito bundle not confirmed (no MEV protection)';
+        ns.renderWidgetPanel();
+        setTimeout(() => {
+          if (ns.widgetSwapStatus === 'done-original') {
+            ns.widgetSwapStatus     = '';
+            ns._bundleNotAtomicNote = null;
+            const _bi = document.getElementById('sr-body-inner');
+            if (_bi) _bi.innerHTML = '';
+            try { ns.renderWidgetPanel?.(); } catch (_) {}
+          }
+        }, 6000);
+        return;
+      }
+      if (e.message === '__bundle_slot_miss__' || e.message === '__bundle_expired__') {
+        // Jito bundle didn't land. Do NOT retry ? that would prompt the wallet a
+        // second time, which is confusing and wastes the user's time. Surface the
+        // failure clearly so the user can decide whether to retry manually (which
+        // will rebuild a fresh quote + bundle from scratch).
+        ns.widgetSnapBaselineRawOut   = null;
+        ns.widgetSnapNetUsd           = null;
+        ns.widgetSnapSavingsUsd       = null;
+        ns.widgetSnapMevProtectionUsd = null;
+        // Slot miss = no Jito validator was the block leader during the blockhash
+        // window. Very common (~30-60% of attempts depending on validator set).
+        // Retrying immediately usually hits a different slot and lands successfully.
+        ns.widgetSwapError  = e.message === '__bundle_slot_miss__'
+          ? 'No Jito leader slot available ? click Swap to retry (usually resolves immediately)'
+          : 'Bundle did not land ? click Swap to try again';
+        ns.widgetSwapStatus = 'error';
+        ns.renderWidgetPanel();
         return;
       }
       const _cancelled = e.message === 'cancelled';

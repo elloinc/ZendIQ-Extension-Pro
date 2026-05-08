@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ZendIQ Pro \u2013 Smart Trade Routing",
-  "version": "0.7.19",
+  "version": "0.7.20",
   "minimum_chrome_version": "104",
   "description": "Solana swap optimiser with MEV protection. Real-time risk scoring on Jupiter, Raydium \u0026 Pump.fun \u2014 before you sign.",
   "homepage_url": "https://zendiq.ai",
@@ -24,6 +24,7 @@
     "https://pump.fun/*",
     "https://*.pump.fun/*",
     "https://*.block-engine.jito.wtf/*",
+    "https://bundles.jito.wtf/*",
     "https://pumpportal.fun/*",
     "https://zendiq-backend.onrender.com/*"
   ],
@@ -64,6 +65,7 @@
         "scripts/page-security.js",
         "scripts/page-approval.js",
         "scripts/page-widget.js",
+        "scripts/page-jito.js",
         "scripts/page-trade.js",
         "scripts/page-network.js",
         "scripts/page-jupiter.js",

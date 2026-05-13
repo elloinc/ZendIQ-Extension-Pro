@@ -812,6 +812,7 @@
               // In that case let the network interceptor finish the job.
               if (ns._pumpTxSigHandled && ns.widgetSwapStatus !== 'pump-slippage-review') return;
               let sig = null;
+              let _rpcErr = false; // RPC returned an error (simulation failed, etc.)
               try {
                 const data = JSON.parse(_text);
                 // Jito JSON-RPC: { result: "<base58_signature>" }
@@ -822,18 +823,47 @@
                 } else {
                   sig = null;
                 }
+                // Capture RPC error — simulation failure, preflight rejection, etc.
+                if (!sig && data?.error) _rpcErr = true;
               } catch (_) {
                 // Response might be plain text signature
                 if (typeof _text === 'string' && _text.length >= 43 && _text.length <= 90) {
                   sig = _text.trim();
                 }
               }
-              if (!sig) return;
+              if (!sig) {
+                // RPC returned an error while we're waiting for the tx to land.
+                // Transition to error state immediately so the widget doesn't stay stuck.
+                if (_rpcErr && (ns.widgetSwapStatus === 'signing-original' || ns.widgetSwapStatus === 'pump-signing' || ns.widgetSwapStatus === 'pump-sending')) {
+                  ns._pumpTxSigHandled = false;
+                  window.__zendiq_ws_confirmed = false;
+                  clearTimeout(ns._pumpSigningTimeout);
+                  ns.pumpFunErrorMsg  = '\u2715 Simulation failed \u2014 click Buy to retry';
+                  ns.widgetSwapStatus = 'pump-error';
+                  try { ns.renderWidgetPanel?.(); } catch (_) {}
+                  clearTimeout(ns._pumpErrorTimer);
+                  ns._pumpErrorTimer = setTimeout(() => {
+                    if (ns.widgetSwapStatus === 'pump-error') {
+                      ns.widgetSwapStatus = '';
+                      ns.pumpFunContext   = null;
+                      ns.pumpFunErrorMsg  = null;
+                      window.__zendiq_ws_confirmed = false;
+                      const w = document.getElementById('sr-widget');
+                      if (w) { w.classList.remove('expanded', 'alert'); }
+                      try { ns.renderWidgetPanel?.(); } catch (_) {}
+                    }
+                  }, 3000);
+                }
+                return;
+              }
               const _alreadyHandled = ns._pumpTxSigHandled; // true = onDecision recorded activity
               ns._pumpTxSigHandled = true; // prevent duplicate handling from parallel requests
               ns._pumpTxCooldownUntil = Date.now() + 10000; // suppress re-intercepts for 10s
               window.__zendiq_ws_confirmed = false;
               clearTimeout(ns._pumpSigningTimeout);
+              // Disconnect the cancel watcher — tx landed successfully, no cancel to detect
+              try { ns._pumpCancelObserver?.disconnect(); } catch (_) {}
+              ns._pumpCancelObserver = null;
               const _wasOptimise = ns._pumpTxWasOptimised
                 ?? (ns.widgetSwapStatus === 'pump-signing' && ns.pumpFunPatchedSlippage);
               // Only record activity if onDecision didn't already do it (avoid duplicates)

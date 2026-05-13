@@ -102,6 +102,7 @@
     pumpFunErrorMsg: null,       // short error message shown in pump-error widget state
     pumpFunPatchedSlippage: null, // true = maxSolCost was successfully patched to 0.5%; false = patch failed (original slippage used)
     _pumpTxSigHandled: false,     // de-dupe flag: first successful Jito/Temporal response wins
+    _pumpCancelObserver: null,     // MutationObserver watching for wallet cancel signals on pump.fun
     _pumpTxCooldownUntil: 0,      // timestamp: suppress re-intercepts for 10s after successful pump tx
     _pumpPrefetchedTx: null,      // { bytes: Uint8Array, fetchedAt: number } — prefetched during panel review
     _pumpBcData: null,            // cached bonding curve data from frontend-api.pump.fun (proactively fetched)

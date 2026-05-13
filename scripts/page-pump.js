@@ -602,6 +602,77 @@
   // Called when user clicks "Sign at X% slippage". Fetches a pre-built tx from
   // pumpportal.fun (optimised slippage: 0.5% default, up to 1.0% when user set ≥1%,
   // plus priority fee), injects a Jito tip, signs, and submits as a single-tx Jito bundle.
+  // ── Wallet cancellation watcher ─────────────────────────────────────────
+  // Pump.fun hooks the wallet BEFORE ZendIQ installs its hooks, so we never see
+  // the rejection error directly. Instead we watch two DOM signals:
+  //   1. pump.fun's buy button regaining its enabled state (disabled attr removed)
+  //   2. A toast/notification element appearing with rejection text
+  // If either fires while we're still in signing-original (no broadcast received),
+  // we treat it as a cancellation and show the error card immediately.
+  function _watchWalletCancel() {
+    // Disconnect any previous watcher
+    if (ns._pumpCancelObserver) { try { ns._pumpCancelObserver.disconnect(); } catch (_) {} ns._pumpCancelObserver = null; }
+    const _trigger = () => {
+      if (ns.widgetSwapStatus !== 'signing-original' || ns._pumpTxSigHandled) return;
+      try { ns._pumpCancelObserver?.disconnect(); } catch (_) {}
+      ns._pumpCancelObserver = null;
+      clearTimeout(ns._pumpSigningTimeout);
+      ns._pumpTxSigHandled = false;
+      window.__zendiq_ws_confirmed = false;
+      ns.pumpFunErrorMsg  = '\u2715 Wallet rejected \u2014 click Buy to retry';
+      ns.widgetSwapStatus = 'pump-error';
+      try { ns.renderWidgetPanel?.(); } catch (_) {}
+      clearTimeout(ns._pumpErrorTimer);
+      ns._pumpErrorTimer = setTimeout(() => {
+        if (ns.widgetSwapStatus === 'pump-error') {
+          ns.widgetSwapStatus = '';
+          ns.pumpFunContext   = null;
+          ns.pumpFunErrorMsg  = null;
+          window.__zendiq_ws_confirmed = false;
+          const w = document.getElementById('sr-widget');
+          if (w) { w.classList.remove('expanded', 'alert'); }
+          try { ns.renderWidgetPanel?.(); } catch (_) {}
+        }
+      }, 3000);
+    };
+    try {
+      ns._pumpCancelObserver = new MutationObserver((mutations) => {
+        if (ns.widgetSwapStatus !== 'signing-original' || ns._pumpTxSigHandled) {
+          try { ns._pumpCancelObserver?.disconnect(); } catch (_) {}
+          ns._pumpCancelObserver = null;
+          return;
+        }
+        for (const m of mutations) {
+          // Signal 1: a button lost its disabled attribute — pump.fun re-enabled the buy button
+          if (m.type === 'attributes' && m.attributeName === 'disabled') {
+            const el = m.target;
+            if (el.tagName === 'BUTTON' && !el.disabled
+                && /buy|place.?trade|confirm|proceed/i.test(el.textContent ?? '')) {
+              _trigger(); return;
+            }
+          }
+          // Signal 2: a new element appeared with rejection language (wallet toast)
+          if (m.type === 'childList') {
+            for (const node of m.addedNodes) {
+              if (node.nodeType !== 1) continue;
+              const txt = node.textContent ?? '';
+              if (txt.length > 0 && txt.length < 300
+                  && /reject|user cancel|declin|denied|wallet.*refus|refus.*wallet/i.test(txt)) {
+                _trigger(); return;
+              }
+            }
+          }
+        }
+      });
+      ns._pumpCancelObserver.observe(document.body, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['disabled'],
+        childList: true,
+      });
+    } catch (_) {}
+  }
+
   async function _signAndSubmitPumpTx(forceBundle = false) {
     const pfc = ns.pumpFunContext;
     if (!pfc) return;
@@ -2354,22 +2425,13 @@
           if (_wp) { _wp.style.display = ''; if (!_wp.classList.contains('expanded')) _wp.classList.add('expanded'); }
           ns.renderWidgetPanel?.();
           window.__zendiq_ws_confirmed = true;
+          _watchWalletCancel(); // detect wallet cancel / button re-enable without waiting for timeout
           if (ns.pendingDecisionResolve) {
             const res = ns.pendingDecisionResolve;
             ns.pendingDecisionResolve = null;
             ns.pendingDecisionPromise = null;
             res('confirm');
           }
-          clearTimeout(ns._pumpSigningTimeout);
-          ns._pumpSigningTimeout = setTimeout(() => {
-            if (ns.widgetSwapStatus === 'signing-original') {
-              ns.widgetSwapStatus = '';
-              ns.pumpFunContext    = null;
-              ns._pumpTxSigHandled = false;
-              window.__zendiq_ws_confirmed = false;
-              try { ns.renderWidgetPanel?.(); } catch (_) {}
-            }
-          }, 20000);
           return true;
         }
         // Paths 2 + 3: ZendIQ-controlled tx via _signAndSubmitPumpTx.

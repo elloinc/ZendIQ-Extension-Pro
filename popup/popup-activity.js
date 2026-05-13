@@ -477,6 +477,8 @@ function _renderHistoryEntry(h, idx) {
     const _sr = h.sandwichResult;
     if (_sr === null) {
       sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Scanning surrounding block transactions for sandwich attacks. Updates automatically." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">pending\u2026</span></div>`;
+    } else if (_sr?.skipped === 'tx_failed') {
+      sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Transaction failed on-chain \u2014 no tokens were transferred, so sandwich detection does not apply." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">N/A \u00b7 tx failed</span></div>`;
     } else if (_sr?.error) {
       sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Block data was unavailable \u2014 sandwich check could not complete." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">unknown</span></div>`;
     } else if (_sr?.detected) {

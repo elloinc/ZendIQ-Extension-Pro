@@ -661,6 +661,8 @@
                 const _sr = h.sandwichResult;
                 if (_sr === null) {
                   sandwichRow = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Scanning surrounding block transactions for sandwich attacks. Updates automatically.">Sandwich check</span><span style="color:#C2C2D4">pending…</span></div>`;
+                } else if (_sr?.skipped === 'tx_failed') {
+                  sandwichRow = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Transaction failed on-chain \u2014 no tokens were transferred, so sandwich detection does not apply.">Sandwich check</span><span style="color:#9B9BAD">N/A \u00b7 tx failed</span></div>`;
                 } else if (_sr?.error) {
                   sandwichRow = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Block data was unavailable \u2014 sandwich check could not complete.">Sandwich check</span><span style="color:#9B9BAD">unknown</span></div>`;
                 } else if (_sr?.detected) {

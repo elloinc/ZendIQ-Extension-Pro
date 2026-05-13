@@ -1015,13 +1015,24 @@
       }
       window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: entry } }, '*');
       // On-chain output amount + quote accuracy enrichment.
-      if (outMint && ns.fetchActualOut) {
+      // Skip for known-failed txs — tokens were never transferred.
+      if (outMint && ns.fetchActualOut && !failed) {
         // Cache symbol now — dismiss timer clears tokenScoreResult/pumpFunContext at 2s
         const _cachedSym = ns.tokenScoreResult?.symbol ?? pfc?.tokenSymbol ?? null;
         (async () => {
           try {
             const result = await ns.fetchActualOut(sig, outMint, null, _quotedRawOut, _outDec);
             if (!result) return;
+            // fetchActualOut returns { txFailed: true } when meta.err is set on-chain.
+            // This catches "proceeded" txs that succeed in the wallet but fail on-chain.
+            if (result.txFailed) {
+              window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: {
+                signature: sig,
+                failed: true,
+                sandwichResult: { detected: false, skipped: 'tx_failed' },
+              }}}, '*');
+              return;
+            }
             const update = { signature: sig, actualOutAmount: result.actualOut };
             if (result.actualOut != null) update.amountOut = String(result.actualOut);
             if (result.quoteAccuracy != null) update.quoteAccuracy = result.quoteAccuracy;
@@ -1046,6 +1057,13 @@
     // Delay 6s so the tx is confirmed on-chain before getTransaction is called;
     // detectSandwich has no built-in polling (unlike fetchActualOut).
     // Retry once at 12s if the first attempt fails with 'unavailable'.
+    // Skip entirely for known-failed txs — no tokens moved, nothing to sandwich-check.
+    if (failed) {
+      window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: {
+        signature: sig, sandwichResult: { detected: false, skipped: 'tx_failed' },
+      }}}, '*');
+      return;
+    }
     try {
       const pfc    = ns.pumpFunContext;
       const outMint = pfc?.outputMint ?? ns.lastOutputMint ?? null;

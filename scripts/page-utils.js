@@ -183,6 +183,8 @@
         if (!tx?.meta) continue; // not confirmed yet — retry
 
         const meta = tx.meta;
+        // tx confirmed but rejected by the program (simulation error, slippage, etc.)
+        if (meta.err != null) return { txFailed: true };
         const msg  = tx.transaction?.message ?? {};
         const keys = msg.staticAccountKeys ?? msg.accountKeys ?? [];
 

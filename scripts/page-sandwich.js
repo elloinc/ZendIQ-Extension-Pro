@@ -310,6 +310,47 @@
           const back = backs.find(b => b.feePayer === front.feePayer);
           if (!back) continue;
 
+          // Proportionality check: a real sandwich bot buys then sells roughly the same
+          // token quantity. If the back-run sold far more than the front-run bought
+          // (> 3×), the seller had a large pre-existing position and this is a false
+          // positive — an unrelated trade in the same slot, not a sandwich.
+          const PROP_THRESHOLD = 3;
+          const _propRatio = front.outDelta > 0 ? back.outSold / front.outDelta : null;
+          const _propSkip  = _propRatio != null && _propRatio > PROP_THRESHOLD;
+          // Always log so we can tune the threshold from real data.
+          console.log('[zq-sandwich] proportionality check', {
+            frontrunBought: front.outDelta,
+            backrunSold:    back.outSold,
+            ratio:          _propRatio,
+            threshold:      PROP_THRESHOLD,
+            decision:       _propSkip ? 'skip' : 'keep',
+            slot,
+          });
+          // Telemetry — no PII, install_id injected by background.js.
+          // Allows backend to build ratio distribution across real detections.
+          if (ns.logMev) {
+            ns.logMev({
+              tx_sig:         sig,
+              detected:       false,            // not a confirmed detection
+              loss_usd:       null,
+              loss_bps:       null,
+              attacker_hash:  null,
+              method:         'unknown',
+              time_to_detect_s: null,
+              prevented_count: 0,
+              event_subtype:  'proportionality_check',
+              data_json: JSON.stringify({
+                frontrun_bought: front.outDelta,
+                backrun_sold:    back.outSold,
+                ratio:           _propRatio,
+                threshold:       PROP_THRESHOLD,
+                decision:        _propSkip ? 'skip' : 'keep',
+                slot,
+              }),
+            });
+          }
+          if (_propSkip) continue;
+
           // Extraction = what the attacker net received in inputMint units
           // back.inReceived - front.inSpent  (positive = profit extracted from user's fill)
           const extractedNative = Math.max(0, back.inReceived - front.inSpent);
@@ -322,7 +363,9 @@
           const _usdIn  = opts.amountInUsd != null ? Number(opts.amountInUsd) : null;
           if (_amtIn > 0 && _usdIn != null) {
             const pricePerUIUnit = _usdIn / _amtIn;
-            extractedUsd = extractedUI * pricePerUIUnit;
+            // Cap: sandwich extraction cannot physically exceed the user's full trade value.
+            // Values above this indicate a false positive (unrelated wallet selling a large bag).
+            extractedUsd = Math.min(extractedUI * pricePerUIUnit, _usdIn);
           }
 
           const res = {
@@ -372,7 +415,10 @@
             let extractedUsd5b = null;
             const _amtIn5b = opts.amountIn    != null ? Number(opts.amountIn)    : null;
             const _usdIn5b = opts.amountInUsd != null ? Number(opts.amountInUsd) : null;
-            if (_amtIn5b > 0 && _usdIn5b != null) extractedUsd5b = extractedUI5b * (_usdIn5b / _amtIn5b);
+            if (_amtIn5b > 0 && _usdIn5b != null) {
+              // Cap at full trade value — extraction cannot physically exceed what the user spent.
+              extractedUsd5b = Math.min(extractedUI5b * (_usdIn5b / _amtIn5b), _usdIn5b);
+            }
 
             const res5b = {
               detected: true,

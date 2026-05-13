@@ -878,6 +878,20 @@
       if (_adptResult3 !== undefined) return _adptResult3;
       // modification unavailable — fall through to original tx path
     }
+    // Site adapter confirm hook — lets pump.fun (and future adapters) handle
+    // Activity recording and state transitions on the legacy window.solana path.
+    // Mirrors the same call in zendiqWsOverlay's confirm branch.
+    if (decision === 'confirm') {
+      window.__zendiq_ws_confirmed = true;
+      try {
+        const _adptConfirmLegacy = await ns.activeSiteAdapter?.()?.onDecisionLegacy?.('confirm', originalMethod, transaction, options);
+        if (_adptConfirmLegacy !== undefined) return _adptConfirmLegacy;
+      } catch (e) {
+        window.__zendiq_ws_confirmed = false;
+        _clearOriginalSigningInfo(ns);
+        throw e;
+      }
+    }
     // 'confirm' or pump-optimise fallback — show signing-original state before passing tx to wallet
     _ensureOriginalSigningInfo(ns);
     ns.widgetSwapStatus = 'signing-original';

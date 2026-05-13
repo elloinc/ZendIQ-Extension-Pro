@@ -46,7 +46,7 @@
         // Derive token price from already-available in-memory data.
         // jupiterLiveQuote.inUsdValue is set on every ~1s Jupiter tick — most accurate.
         // widgetLastPriceData.inputPriceUsd is set when ZendIQ fetches its own order.
-        let tokenPriceUsd = 1;
+        let tokenPriceUsd = null;
         if (isStable) {
           tokenPriceUsd = 1;
         } else {
@@ -55,10 +55,14 @@
             const _lqInAmt = Number(_lq.inAmount) / Math.pow(10, inDec);
             if (_lqInAmt > 0) tokenPriceUsd = _lq.inUsdValue / _lqInAmt;
           } else {
-            tokenPriceUsd = ns.widgetLastPriceData?.inputPriceUsd ?? 1;
+            // Only use widgetLastPriceData.inputPriceUsd when the mint matches — stale price
+            // from a previous pair (e.g. USDC → SOL session) would set price=1 for SOL,
+            // making inAmountUsd = rawSolAmount × 1 = raw lamport-divided amount, not USD.
+            const _wld = ns.widgetLastPriceData;
+            if (_wld?.inputMint === p?.inputMint) tokenPriceUsd = _wld?.inputPriceUsd ?? null;
           }
         }
-        const inAmountUsd = inAmount * tokenPriceUsd;
+        const inAmountUsd = tokenPriceUsd != null ? inAmount * tokenPriceUsd : null;
         const slippagePct = p?.slippageBps != null ? Number(p.slippageBps) / 100 : 0.5;
         const TOKEN_SYMBOLS = {
           'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',

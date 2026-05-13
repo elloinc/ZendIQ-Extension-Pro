@@ -602,7 +602,7 @@
   // Called when user clicks "Sign at X% slippage". Fetches a pre-built tx from
   // pumpportal.fun (optimised slippage: 0.5% default, up to 1.0% when user set ≥1%,
   // plus priority fee), injects a Jito tip, signs, and submits as a single-tx Jito bundle.
-  async function _signAndSubmitPumpTx() {
+  async function _signAndSubmitPumpTx(forceBundle = false) {
     const pfc = ns.pumpFunContext;
     if (!pfc) return;
     const mint      = pfc.outputMint;
@@ -640,7 +640,7 @@
       //    tip = 80% of exposure → user keeps 20% as net savings from protection.
       //    If 80% of exposure is below the tip floor the bundle would cost more than it saves — skip.
       const _sandwichExposureLam = Math.round(solAmount * 1e9 * _ziqSlip / 100);
-      if (!_pumpBundleProfitable(solAmount, _ziqSlip)) {
+      if (!forceBundle && !_pumpBundleProfitable(solAmount, _ziqSlip)) {
         // Trade too small to bundle profitably — submit direct via RPC.
         // Show explanation card while wallet prompt is open.
         const _expLamDirect = Math.round(solAmount * 1e9 * _ziqSlip / 100);
@@ -804,8 +804,21 @@
       const item = Array.isArray(r) ? r[0] : r;
       if (item?.signature) {
         const raw = item.signature;
-        if (typeof raw === 'string') return raw;
+        if (typeof raw === 'string') {
+          // Already base58 (64–90 chars) — return as-is.
+          if (/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(raw)) return raw;
+          // May be base64 (crosses JS messaging boundary).
+          try { const b = Uint8Array.from(atob(raw), c => c.charCodeAt(0)); if (b.length >= 32) return ns.b58Encode?.(b) ?? null; } catch (_) {}
+          return null;
+        }
         if (raw instanceof Uint8Array) return ns.b58Encode?.(raw) ?? null;
+        // Plain object {0:n, 1:n, ...} — Wallet Standard sig crossing a message boundary.
+        if (raw && typeof raw === 'object') {
+          const len = raw.length ?? Object.keys(raw).length;
+          const arr = new Uint8Array(len);
+          for (let i = 0; i < len; i++) arr[i] = raw[i] ?? raw[String(i)] ?? 0;
+          return ns.b58Encode?.(arr) ?? null;
+        }
       }
       let txBytes = item?.signedTransaction ?? item?.transaction ?? null;
       if (!txBytes && item instanceof Uint8Array) txBytes = item;
@@ -890,6 +903,45 @@
         snapSavingsUsd: _snapSavUsd,
         snapNetUsd:     _snapNetUsd,
       };
+      // Analytics — swap_optimised when ZendIQ signed; swap_proceeded when user chose original path.
+      // amount_out: use expected token output from the buy instruction (raw / 10^decimals).
+      // swap_proceeded fires even when failed=true (user signed the tx; on-chain error is separate).
+      // swap_optimised only fires on success (failed=false) — we don't count failed bundles as wins.
+      if (ns.logProEvent) {
+        const _pfSlipBps = pfc?.slippagePct != null ? Math.round(pfc.slippagePct * 100) : null;
+        const _amtOut    = _quotedRawOut != null ? _quotedRawOut / Math.pow(10, _outDec) : null;
+        if (optimized && !failed) {
+          ns.logProEvent('swap_optimised', {
+            site:             'pump.fun',
+            net_benefit_usd:  _snapNetUsd  ?? null,
+            routing_gain_usd: null,
+            mev_value_usd:    _snapSavUsd  ?? null,
+            fees_usd:         _tipUsdSnap  >  0 ? _tipUsdSnap : null,
+            trade_usd:        _inUsd       ?? null,
+            route_type:       'unknown',
+            jito_used:        tipLamports  >  0,
+            profile:          ns.settingsProfile ?? null,
+            auto_sign:        ns.autoAccept      ?? null,
+            input_mint:       inMint,
+            output_mint:      outMint,
+            amount_in:        solAmt        ?? null,
+            amount_out:       _amtOut,
+            slippage_bps:     pfc?.ziqSlip != null ? Math.round(pfc.ziqSlip * 100) : _pfSlipBps,
+          });
+        } else if (!optimized) {
+          ns.logProEvent('swap_proceeded', {
+            site:         'pump.fun',
+            trade_usd:    _inUsd ?? null,
+            profile:      ns.settingsProfile ?? null,
+            reason:       null,
+            input_mint:   inMint,
+            output_mint:  outMint,
+            amount_in:    solAmt   ?? null,
+            amount_out:   _amtOut,
+            slippage_bps: _pfSlipBps,
+          });
+        }
+      }
       window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: entry } }, '*');
       // On-chain output amount + quote accuracy enrichment.
       if (outMint && ns.fetchActualOut) {
@@ -1605,6 +1657,23 @@
         tokenScore:  ns.tokenScoreResult ?? null,
       };
 
+      // Analytics — fire swap_intercepted now that we have full context
+      if (ns.logProEvent) {
+        const _pfSolP = ns.widgetLastPriceData?.solPriceUsd ?? 80;
+        ns.logProEvent('swap_intercepted', {
+          site:         'pump.fun',
+          risk_level:   pfRisk?.level            ?? null,
+          mev_level:    pfRisk?.mev?.riskLevel   ?? null,
+          token_level:  ns.tokenScoreResult?.level ?? null,
+          profile:      ns.settingsProfile        ?? null,
+          trade_usd:    solAmt > 0 ? Math.min(solAmt * _pfSolP, 50000) : null,
+          input_mint:   'So11111111111111111111111111111111111111112',
+          output_mint:  ns.pumpFunContext.outputMint,
+          amount_in:    solAmt > 0 ? solAmt : null,
+          slippage_bps: slip   != null ? Math.round(slip * 100) : null,
+        });
+      }
+
       // Trigger token score fetch immediately on swap detection.
       // page-interceptor.js misses this because p (window.__zendiq_last_order_params)
       // is always null on pump.fun — there are no Jupiter /order ticks here.
@@ -2060,10 +2129,22 @@
         label: _noOptimisation ? '\u2713 Continue with original order'
              : _isDirectPath   ? `\u2736 Sign at ${_ziqSl.toFixed(1)}% (direct)`
                                 : `\u2736 Sign at ${_ziqSl.toFixed(1)}% + Jito bundle` };
-      const _secondaryBtns = [
-        { id: 'sr-btn-pump-proceed', label: `\u21a9 Proceed at ${slip.toFixed(1)}% (original)`, tooltip: `Proceed with your original ${slip.toFixed(1)}% slippage \u2014 ZendIQ will not modify the transaction` },
-        { id: 'sr-btn-pump-cancel',  label: '\u2715 Cancel', tooltip: 'Cancel this swap entirely. Nothing will be sent to your wallet \u2014 click Buy again to retry.' },
-      ];
+      // When already optimal (nothing to optimise), replace the "Proceed at X%" button with
+      // "Optimize anyway (at a loss)" so the user can force a Jito bundle even when it isn't
+      // profitable on this trade size.  For all other cases keep the original secondary.
+      const _secondaryBtns = _noOptimisation
+        ? [
+            { id: 'sr-btn-pump-force-bundle', label: '\u26a1 Optimize anyway (at a loss)',
+              tooltip: 'Force ZendIQ to send a Jito bundle even though the tip cost exceeds the estimated bot protection value on this trade. Use when you want MEV protection regardless of profitability.' },
+            { id: 'sr-btn-pump-cancel', label: '\u2715 Cancel',
+              tooltip: 'Cancel this swap entirely. Nothing will be sent to your wallet \u2014 click Buy again to retry.' },
+          ]
+        : [
+            { id: 'sr-btn-pump-proceed', label: `\u21a9 Proceed at ${slip.toFixed(1)}% (original)`,
+              tooltip: `Proceed with your original ${slip.toFixed(1)}% slippage \u2014 ZendIQ will not modify the transaction` },
+            { id: 'sr-btn-pump-cancel',  label: '\u2715 Cancel',
+              tooltip: 'Cancel this swap entirely. Nothing will be sent to your wallet \u2014 click Buy again to retry.' },
+          ];
 
       const _cards = _buildOrder(orderRows) + _overallCard + _buildTs(pfTs, isSimp) + _botCard
         + _buildCosts(costsRows, _isDirectPath ? null : 3) + _infoBanner;
@@ -2252,8 +2333,8 @@
         const _noOpt = !_lowersSlip && !_bundleProfitable;
         if (_noOpt) {
           // Path 1: pure passthrough — user already at optimal slippage, nothing to do.
-          ns.pumpFunWantOptimise = false;
-          ns._pumpTxSigHandled = false;
+          ns.pumpFunWantOptimise  = false;
+          ns._pumpTxSigHandled    = false; // must be clear so network interceptor can fire
           ns.widgetOriginalSigningInfo = {
             inputMint:     'So11111111111111111111111111111111111111112',
             outputMint:    _pfc?.outputMint ?? ns.lastOutputMint ?? null,
@@ -2302,6 +2383,20 @@
           res('optimise'); // interceptor does nothing — _signAndSubmitPumpTx handles signing
         }
         _signAndSubmitPumpTx(); // async — transitions to pump-done / pump-error internally
+        return true;
+      }
+      if (id === 'sr-btn-pump-force-bundle') {
+        // "Optimize anyway (at a loss)" — user explicitly chose Jito bundle protection
+        // even though the tip cost exceeds the estimated sandwich exposure on this trade.
+        // Release the pending promise (interceptor does nothing) and force the bundle path.
+        ns._pumpTxSigHandled = false;
+        if (ns.pendingDecisionResolve) {
+          const res = ns.pendingDecisionResolve;
+          ns.pendingDecisionResolve = null;
+          ns.pendingDecisionPromise = null;
+          res('optimise'); // interceptor does nothing — _signAndSubmitPumpTx handles signing
+        }
+        _signAndSubmitPumpTx(true); // forceBundle=true bypasses profitability check
         return true;
       }
       if (id === 'sr-btn-pump-proceed') {

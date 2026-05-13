@@ -63,8 +63,10 @@
       if (lq?.inUsdValue != null && lqInAmt > 0) {
         tokenPriceUsd = lq.inUsdValue / lqInAmt;
       } else {
+        // Only use widgetLastPriceData.inputPriceUsd when the mint matches — stale price
+        // from a previous pair would be applied to the wrong token (e.g. USDC price=1 used for SOL).
         const _wld = ns.widgetLastPriceData;
-        tokenPriceUsd = _wld?.inputPriceUsd ?? null;
+        if (_wld?.inputMint === p?.inputMint) tokenPriceUsd = _wld?.inputPriceUsd ?? null;
       }
     }
     const inAmountUsd = tokenPriceUsd != null ? inAmount * tokenPriceUsd : null;
@@ -178,11 +180,17 @@
         // Analytics: swap proceeded via Jupiter's original route
         try { if (ns.logProEvent) {
           const _sshCon = window.location.hostname;
+          const _slipCon = window.__zendiq_last_order_params?.slippageBps;
           ns.logProEvent('swap_proceeded', {
-            site:      _sshCon.includes('raydium') ? 'raydium.io' : _sshCon.includes('pump') ? 'pump.fun' : 'jup.ag',
-            trade_usd: entry.inUsdValue != null ? Math.min(Number(entry.inUsdValue), 50000) : null,
-            profile:   ns.settingsProfile ?? 'unknown',
-            reason:    null,
+            site:        _sshCon.includes('raydium') ? 'raydium.io' : _sshCon.includes('pump') ? 'pump.fun' : 'jup.ag',
+            trade_usd:   entry.inUsdValue != null ? Math.min(Number(entry.inUsdValue), 50000) : null,
+            profile:     ns.settingsProfile ?? 'unknown',
+            reason:      null,
+            input_mint:  inMint  ?? null,
+            output_mint: outMint ?? null,
+            amount_in:   inAmt   != null ? Number(inAmt)  : null,
+            amount_out:  outAmt  != null ? Number(outAmt) : null,
+            slippage_bps: _slipCon != null ? Number(_slipCon) : null,
           });
         } } catch (_) {}
         // Structured trade record (routes to trades DB table)
@@ -544,11 +552,17 @@
                 try { window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: entry } }, '*'); } catch (_) {}
                 // Analytics: Raydium swap proceeded via original route
                 try { if (ns.logProEvent) {
+                  const _slipRdm = window.__zendiq_last_order_params?.slippageBps;
                   ns.logProEvent('swap_proceeded', {
-                    site:      'raydium.io',
-                    trade_usd: entry.inUsdValue != null ? Math.min(Number(entry.inUsdValue), 50000) : null,
-                    profile:   ns.settingsProfile ?? 'unknown',
-                    reason:    null,
+                    site:        'raydium.io',
+                    trade_usd:   entry.inUsdValue != null ? Math.min(Number(entry.inUsdValue), 50000) : null,
+                    profile:     ns.settingsProfile ?? 'unknown',
+                    reason:      null,
+                    input_mint:  _rdmInMint  ?? null,
+                    output_mint: _rdmOutMint ?? null,
+                    amount_in:   _rdmInAmt   != null ? Number(_rdmInAmt)  : null,
+                    amount_out:  _rdmOutAmt  != null ? Number(_rdmOutAmt) : null,
+                    slippage_bps: _slipRdm != null ? Number(_slipRdm) : null,
                   });
                 } } catch (_) {}
                 // Structured trade record (routes to trades DB table)
@@ -710,16 +724,26 @@
       // Our wallet hooks (signTransaction / signAndSendTransaction) do NOT fire
       // on pump.fun — the site uses an internal wallet adapter that caches the
       // original signing methods before our hooks are installed.
-      // Pump.fun submits signed txs to Jito block engines and Temporal/Nozomi
-      // in parallel (8+ POSTs to */transactions). Jito JSON-RPC response format:
-      // { jsonrpc: "2.0", result: "<base58_signature>" }
-      // We tap the first successful response containing a signature.
-      if (window.location.hostname.includes('pump.fun')
+      // Pump.fun submits signed txs to Jito block engines, Temporal, Nozomi,
+      // and standard Solana RPC in parallel. We tap the first successful POST
+      // response containing a valid base58 signature regardless of path.
+      // Known submission patterns:
+      //   - Jito:      */transactions          (JSON-RPC { result: sig })
+      //   - Temporal:  */api/v1/transactions   (varies)
+      //   - Nozomi:    */api/sendTransaction   (varies)
+      //   - RPC:       */                      (JSON-RPC sendTransaction)
+      // We match any POST from pump.fun that returns a sig-shaped response.
+      const _isPumpTxPost = window.location.hostname.includes('pump.fun')
           && (ns.widgetSwapStatus === 'pump-signing' || ns.widgetSwapStatus === 'pump-sending' || ns.widgetSwapStatus === 'signing-original' || window.__zendiq_ws_confirmed)
           && typeof resource === 'string'
-          && resource.includes('/transactions')) {
-        const _pumpMethod = init?.method?.toUpperCase?.();
-        if (_pumpMethod === 'POST') {
+          && (init?.method?.toUpperCase?.() === 'POST')
+          // Broad match: any URL that looks like a tx submission endpoint.
+          // Avoids matching pump.fun's own REST API calls (coins, trades, etc.).
+          && (/\/transactions?(?:\?|$|\/)|sendTransaction|sendRawTransaction|\.mainnet\.|jito|temporal|nozomi|nextblock|bloxroute|triton/i.test(resource)
+              // Fallback: any POST with a JSON body containing a base58-encoded transaction param.
+              || (() => { try { const b = typeof init?.body === 'string' ? JSON.parse(init.body) : null; return typeof b?.params?.[0] === 'string' && b.params[0].length > 80; } catch(_){return false;} })());
+      if (_isPumpTxPost) {
+        {
           // Extract signature from request body as fallback — the serialized tx's
           // first 64 bytes (after the 1-byte numSigners prefix) are the fee-payer sig.
           let _reqBodySig = null;
@@ -782,8 +806,11 @@
           try {
             const _clone = resp.clone();
             _clone.text().then(_text => {
-              // Already handled by a prior parallel request
-              if (ns._pumpTxSigHandled) return;
+              // Already handled by a prior parallel request — unless the widget is still
+              // stuck at pump-slippage-review, which means onDecision set the flag but
+              // somehow failed to transition the state (race condition / DOM loss).
+              // In that case let the network interceptor finish the job.
+              if (ns._pumpTxSigHandled && ns.widgetSwapStatus !== 'pump-slippage-review') return;
               let sig = null;
               try {
                 const data = JSON.parse(_text);
@@ -802,13 +829,15 @@
                 }
               }
               if (!sig) return;
+              const _alreadyHandled = ns._pumpTxSigHandled; // true = onDecision recorded activity
               ns._pumpTxSigHandled = true; // prevent duplicate handling from parallel requests
               ns._pumpTxCooldownUntil = Date.now() + 10000; // suppress re-intercepts for 10s
               window.__zendiq_ws_confirmed = false;
               clearTimeout(ns._pumpSigningTimeout);
               const _wasOptimise = ns._pumpTxWasOptimised
                 ?? (ns.widgetSwapStatus === 'pump-signing' && ns.pumpFunPatchedSlippage);
-              ns._recordPumpActivity?.(sig, !!_wasOptimise);
+              // Only record activity if onDecision didn't already do it (avoid duplicates)
+              if (!_alreadyHandled) ns._recordPumpActivity?.(sig, !!_wasOptimise);
               ns._pumpTxWasOptimised = false; // clear after use
               // Transition widget
               ns.widgetOriginalTxSig = sig;

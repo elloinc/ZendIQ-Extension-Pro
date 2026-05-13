@@ -141,6 +141,7 @@
         try { if (ns.logProEvent) {
           const _r   = risk;
           const _ssh = window.location.hostname;
+          const _swp = window.__zendiq_last_order_params ?? {};
           ns.logProEvent('swap_intercepted', {
             site:        _ssh.includes('raydium') ? 'raydium.io' : _ssh.includes('pump') ? 'pump.fun' : 'jup.ag',
             risk_level:  _r?.level  ?? null,
@@ -148,6 +149,10 @@
             token_level: ns.tokenScoreResult?.level ?? null,
             profile:     ns.settingsProfile ?? 'unknown',
             trade_usd:   _r?.swapAmountUsd != null ? Math.min(Number(_r.swapAmountUsd), 50000) : null,
+            input_mint:  _swp.inputMint  ?? null,
+            output_mint: _swp.outputMint ?? null,
+            amount_in:   _r?.swapAmount  ?? null,
+            slippage_bps: _swp.slippageBps != null ? Number(_swp.slippageBps) : null,
           });
         } } catch (_) {}
         try { if (ns.logFunnel) {
@@ -173,6 +178,7 @@
       // Analytics: swap intercepted on always-ask-me path (passed threshold filter)
       try { if (ns.logProEvent) {
         const _ssh2 = window.location.hostname;
+        const _swp2 = window.__zendiq_last_order_params ?? {};
         ns.logProEvent('swap_intercepted', {
           site:        _ssh2.includes('raydium') ? 'raydium.io' : _ssh2.includes('pump') ? 'pump.fun' : 'jup.ag',
           risk_level:  risk?.level  ?? null,
@@ -180,6 +186,10 @@
           token_level: ns.tokenScoreResult?.level ?? null,
           profile:     ns.settingsProfile ?? 'unknown',
           trade_usd:   risk?.swapAmountUsd != null ? Math.min(Number(risk.swapAmountUsd), 50000) : null,
+          input_mint:  _swp2.inputMint  ?? null,
+          output_mint: _swp2.outputMint ?? null,
+          amount_in:   risk?.swapAmount  ?? null,
+          slippage_bps: _swp2.slippageBps != null ? Number(_swp2.slippageBps) : null,
         });
       } } catch (_) {}
       try { if (ns.logFunnel) {

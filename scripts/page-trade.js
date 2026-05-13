@@ -813,6 +813,8 @@
         const pri  = ns.widgetLastOrderFees?.priorityFeeLamports ?? 0;
         const jito = ns.widgetLastOrderFees?.jitoTipLamports ?? 0;
         ns.widgetLastPriceData = {
+          inputMint:      inputMint ?? null,
+          outputMint:     outputMint ?? null,
           inputPriceUsd:  iprice,
           outputPriceUsd: oprice,
           solPriceUsd:    sprice,
@@ -1513,6 +1515,11 @@
             jito_used:        (_cap?.source === 'raydium' && (_feesSkip.jitoTipLamports ?? 0) >= 1000),
             profile:          ns.settingsProfile ?? 'unknown',
             auto_sign:        !!ns.autoAccept,
+            input_mint:       _cap?.inputMint  ?? null,
+            output_mint:      _cap?.outputMint ?? null,
+            amount_in:        _cap?.amountUI   ?? null,
+            amount_out:       _lo.outAmount ? (Number(_lo.outAmount) / Math.pow(10, _dec)) : null,
+            slippage_bps:     _cap?.originalSlippageBps ?? null,
           });
           // Structured trade record (routes to trades DB table)
           try { if (ns.logTrade) {
@@ -2137,6 +2144,11 @@
             jito_used:        !!(entry.jitoBundle),
             profile:          ns.settingsProfile ?? 'unknown',
             auto_sign:        !!ns.autoAccept,
+            input_mint:       entry.inputMint  ?? captured?.inputMint  ?? null,
+            output_mint:      entry.outputMint ?? captured?.outputMint ?? null,
+            amount_in:        inAmt  != null ? Number(inAmt)  : null,
+            amount_out:       outAmt != null ? Number(outAmt) : null,
+            slippage_bps:     captured?.originalSlippageBps ?? null,
           });
           // Structured trade record (routes to trades DB table)
           try { if (ns.logTrade) {

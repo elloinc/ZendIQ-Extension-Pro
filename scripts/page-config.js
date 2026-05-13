@@ -125,7 +125,7 @@
     if (jitoMode === 'always') return { priorityFeeLamports: 500_000, jitoTipLamports: 200_000 };
 
     // SOL price fallback for fee scaling calculations when live price is unavailable
-    const sol = solPriceUsd != null && solPriceUsd > 0 ? solPriceUsd : 80;
+    const sol = solPriceUsd != null && solPriceUsd > 0 ? solPriceUsd : 150;
 
     // Combined score: base risk + MEV boost (capped +30 pts).
     // Multiplier 0.5 so MEDIUM MEV (score 25) contributes +13 pts.

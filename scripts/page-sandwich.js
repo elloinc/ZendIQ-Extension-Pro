@@ -24,6 +24,10 @@
   const WINDOW_SIZE   = 3;
   // Abort the whole check if it takes longer than this.
   const TIMEOUT_MS    = 15000;
+  // Scale mismatch threshold for strategy 5c (front-run only).
+  // When the front-runner's SOL spend exceeds the victim's by this multiple,
+  // they are operating at a different scale and the victim is not their target.
+  const SCALE_MISMATCH_5C_THRESHOLD = 10;
 
   // Known Jito tip accounts — sandwich bots tip one of these to guarantee bundle ordering.
   const JITO_TIP_ACCOUNTS = new Set([
@@ -108,6 +112,50 @@
     const topLevel = (txData?.transaction?.message?.instructions ?? []).map(ix => ix.programId);
     const inner    = (txData?.meta?.innerInstructions ?? []).flatMap(ii => (ii.instructions ?? []).map(ix => ix.programId));
     return [...topLevel, ...inner].some(pid => pid && KNOWN_BOT_PROGRAMS.has(pid));
+  }
+
+  // ── extraction finalizer ─────────────────────────────────────────────────
+
+  /**
+   * _finalizeExtraction(rawUsd, usdIn, strategy, metadata)
+   *
+   * Single chokepoint that applies the trade-value USD cap to every strategy.
+   * Extraction cannot physically exceed what the victim spent.
+   * When the cap triggers, fires a console.log and a logMev telemetry event so
+   * we can detect which strategies are producing inflated estimates.
+   *
+   * @param {number|null} rawUsd    – uncapped estimate from the strategy formula
+   * @param {number|null} usdIn     – victim's full trade value in USD
+   * @param {string}      strategy  – '5' | '5b' | '5c' (for telemetry)
+   * @param {{sig?:string, slot?:number}} metadata
+   * @returns {number|null}
+   */
+  function _finalizeExtraction(rawUsd, usdIn, strategy, metadata) {
+    if (rawUsd == null || usdIn == null) return rawUsd;
+    if (rawUsd <= usdIn) return rawUsd;
+    const ratio = rawUsd / usdIn;
+    console.log('[zq-sandwich] usd cap triggered', { strategy, extractedUsd: rawUsd, usdIn, ratio });
+    if (ns.logMev) {
+      ns.logMev({
+        tx_sig:           metadata?.sig  ?? null,
+        detected:         false,
+        loss_usd:         null,
+        loss_bps:         null,
+        attacker_hash:    null,
+        method:           'unknown',
+        time_to_detect_s: null,
+        prevented_count:  0,
+        event_subtype:    'usd_cap_triggered',
+        data_json: JSON.stringify({
+          strategy,
+          extractedUsd: rawUsd,
+          usdIn,
+          ratio,
+          slot: metadata?.slot ?? null,
+        }),
+      });
+    }
+    return usdIn;
   }
 
   // ── main export ──────────────────────────────────────────────────────────
@@ -363,9 +411,7 @@
           const _usdIn  = opts.amountInUsd != null ? Number(opts.amountInUsd) : null;
           if (_amtIn > 0 && _usdIn != null) {
             const pricePerUIUnit = _usdIn / _amtIn;
-            // Cap: sandwich extraction cannot physically exceed the user's full trade value.
-            // Values above this indicate a false positive (unrelated wallet selling a large bag).
-            extractedUsd = Math.min(extractedUI * pricePerUIUnit, _usdIn);
+            extractedUsd = _finalizeExtraction(extractedUI * pricePerUIUnit, _usdIn, '5', { sig, slot });
           }
 
           const res = {
@@ -416,8 +462,7 @@
             const _amtIn5b = opts.amountIn    != null ? Number(opts.amountIn)    : null;
             const _usdIn5b = opts.amountInUsd != null ? Number(opts.amountInUsd) : null;
             if (_amtIn5b > 0 && _usdIn5b != null) {
-              // Cap at full trade value — extraction cannot physically exceed what the user spent.
-              extractedUsd5b = Math.min(extractedUI5b * (_usdIn5b / _amtIn5b), _usdIn5b);
+              extractedUsd5b = _finalizeExtraction(extractedUI5b * (_usdIn5b / _amtIn5b), _usdIn5b, '5b', { sig, slot });
             }
 
             const res5b = {
@@ -480,40 +525,75 @@
           // Confidence: possible with token_flow alone; probable with at least one
           // corroborating signal (Jito, known program, or multiple buyers in same slot).
           const _conf5c = _sig5c.length > 1 ? 'probable' : 'possible';
-          // Rough extraction estimate: the bot's SOL spend as a fraction of the
-          // victim's input represents the price impact they extracted from the user.
-          // We can't compute exact profit without the back-run.
-          let _extUsd5c = null;
           const _amtIn5c = opts.amountIn    != null ? Number(opts.amountIn)    : null;
           const _usdIn5c = opts.amountInUsd != null ? Number(opts.amountInUsd) : null;
-          if (_best.solSpent != null && _amtIn5c > 0 && _usdIn5c != null) {
-            // Extraction ≈ victim's input USD × (bot_sol / victim_sol) × typical margin 10%
-            _extUsd5c = _usdIn5c * (_best.solSpent / _amtIn5c) * 0.10;
+
+          // Scale mismatch guard: when the front-runner spent far more SOL than the victim,
+          // they are operating at a different scale and this is not a targeted attack.
+          // Skip detection and fall through to the clean result.
+          const _scaleRatio5c = (_best.solSpent != null && _amtIn5c > 0)
+            ? _best.solSpent / _amtIn5c : null;
+          if (_scaleRatio5c != null && _scaleRatio5c > SCALE_MISMATCH_5C_THRESHOLD) {
+            console.log('[zq-sandwich] scale mismatch 5c', {
+              botSolSpent: _best.solSpent, victimAmtIn: _amtIn5c,
+              ratio: _scaleRatio5c, threshold: SCALE_MISMATCH_5C_THRESHOLD, slot,
+            });
+            if (ns.logMev) {
+              ns.logMev({
+                tx_sig:           sig,
+                detected:         false,
+                loss_usd:         null,
+                loss_bps:         null,
+                attacker_hash:    null,
+                method:           'unknown',
+                time_to_detect_s: null,
+                prevented_count:  0,
+                event_subtype:    'scale_mismatch_5c',
+                data_json: JSON.stringify({
+                  botSolSpent: _best.solSpent,
+                  victimAmtIn: _amtIn5c,
+                  ratio:       _scaleRatio5c,
+                  threshold:   SCALE_MISMATCH_5C_THRESHOLD,
+                  slot,
+                }),
+              });
+            }
+            // Fall through to clean result below.
+          } else {
+            // Rough extraction estimate: the bot's SOL spend as a fraction of the
+            // victim's input represents the price impact they extracted from the user.
+            // We can't compute exact profit without the back-run.
+            let _extUsd5c = null;
+            if (_best.solSpent != null && _amtIn5c > 0 && _usdIn5c != null) {
+              _extUsd5c = _finalizeExtraction(
+                _usdIn5c * (_best.solSpent / _amtIn5c) * 0.10, _usdIn5c, '5c', { sig, slot }
+              );
+            }
+            const res5c = {
+              detected: true,
+              method:   'front-run',
+              confidence: _conf5c,
+              signals:   _sig5c,
+              attackerWallet: _best.feePayer,
+              frontRunSig:    _best.cSig,
+              backRunSig:     null,
+              frontRunner: {
+                wallet:     _best.feePayer,
+                signature:  _best.cSig,
+                tokenDelta: _best.tokenDelta,
+                solSpent:   _best.solSpent,
+              },
+              extractedNative: null,
+              extractedUI:     null,
+              extractedUsd:    _extUsd5c,
+              inputMint,
+              outputMint,
+              scanned: candidateJobs.length,
+              slot,
+            };
+            ns.sandwichCache.set(sig, res5c);
+            return res5c;
           }
-          const res5c = {
-            detected: true,
-            method:   'front-run',
-            confidence: _conf5c,
-            signals:   _sig5c,
-            attackerWallet: _best.feePayer,
-            frontRunSig:    _best.cSig,
-            backRunSig:     null,
-            frontRunner: {
-              wallet:     _best.feePayer,
-              signature:  _best.cSig,
-              tokenDelta: _best.tokenDelta,
-              solSpent:   _best.solSpent,
-            },
-            extractedNative: null,
-            extractedUI:     null,
-            extractedUsd:    _extUsd5c,
-            inputMint,
-            outputMint,
-            scanned: candidateJobs.length,
-            slot,
-          };
-          ns.sandwichCache.set(sig, res5c);
-          return res5c;
         }
 
         // No matching pair or front-runner found — clean

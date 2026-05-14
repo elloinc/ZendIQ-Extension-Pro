@@ -908,7 +908,7 @@
       const outMint = pfc?.outputMint ?? ns.lastOutputMint ?? null;
       const inMint  = 'So11111111111111111111111111111111111111112';
       const risk    = pfc?.risk ?? ns.lastRiskResult ?? null;
-      const solP    = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+      const solP    = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
       const solAmt  = pfc?.solAmount ?? null;
       const _inUsd  = solAmt != null ? solAmt * solP : null;
       // Expected token output from the tx instruction (bytes 8-15 of pump buy ix).
@@ -1069,7 +1069,7 @@
       const outMint = pfc?.outputMint ?? ns.lastOutputMint ?? null;
       if (outMint && ns.detectSandwich) {
         const inMint = 'So11111111111111111111111111111111111111112';
-        const solP   = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+        const solP   = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
         const solAmt = pfc?.solAmount ?? null;
         const _sandwichOpts = {
           inputDecimals: 9,
@@ -1709,7 +1709,7 @@
       let pfRisk = ns.lastRiskResult;
       if (solAmt > 0) {
         try {
-          const sp   = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+          const sp   = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
           const pfTx = { swapInfo: {
             inAmount: solAmt, inAmountUsd: solAmt * sp, tokenPriceUsd: sp,
             inputMint: SOL_MINT, outputMint: ns.lastOutputMint ?? null,
@@ -1748,7 +1748,7 @@
 
       // Analytics — fire swap_intercepted now that we have full context
       if (ns.logProEvent) {
-        const _pfSolP = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+        const _pfSolP = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
         ns.logProEvent('swap_intercepted', {
           site:         'pump.fun',
           risk_level:   pfRisk?.level            ?? null,
@@ -1947,7 +1947,7 @@
       const pfc  = ns.pumpFunContext;
       const slip = pfc.slippagePct ?? 1;
       const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, slip);
-      const solP = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+      const solP = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
       const ts   = (ns.tokenScoreResult?.mint === pfc.outputMint &&
                     (ns.tokenScoreResult?.loaded || ns.tokenScoreResult?.factors?.length))
         ? ns.tokenScoreResult : pfc.tokenScore;
@@ -2044,7 +2044,7 @@
       const pfc    = ns.pumpFunContext;
       const slip   = pfc.slippagePct ?? 1;
       const _ziqSl = pfc.ziqSlip ?? Math.min(1.0, slip);
-      const solP   = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+      const solP   = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
       const pfRisk = ns.lastRiskResult ?? pfc.risk;
       const mevR   = pfRisk?.mev ?? null;
       const pfTs   = (ns.tokenScoreResult?.mint === pfc.outputMint &&

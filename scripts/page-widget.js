@@ -1012,8 +1012,8 @@
             }
             // MEV shield — active when calcDynamicFees would add a Jito tip
             const rScore = risk?.score ?? 0;
-            // Consistent SOL price: live price → risk.solPrice → $150 floor
-            const _solPreview = ns.widgetLastPriceData?.solPriceUsd ?? risk?.solPrice ?? 150;
+            // Consistent SOL price: live price → risk.solPrice → cached boot price → $150 floor
+            const _solPreview = ns.widgetLastPriceData?.solPriceUsd ?? risk?.solPrice ?? ns.solPriceUsd ?? 150;
             const { jitoTipLamports: _previewJito, priorityFeeLamports: _previewPri } = ns.calcDynamicFees({
               riskScore: rScore,
               mevScore:  risk?.mev?.riskScore ?? 0,
@@ -1483,9 +1483,8 @@
         const jitoL  = fees.jitoTipLamports ?? 0;
         const SFP    = 0.0005;
         const svcUsd = 0; // Not yet extracted — free during beta
-        // Use a $150 SOL floor when sol price is unavailable (non-SOL pairs) so fee
-        // values are never silently null — same fallback as page-trade.js netBenefit gate.
-        const _solForFees = sol ?? 150;
+        // Use cached SOL price from background (ns.solPriceUsd) when order-derived price is absent
+        const _solForFees = sol ?? ns.solPriceUsd ?? 150;
         const priUsd  = pd.priorityFeeUsd  != null ? Number(pd.priorityFeeUsd)  : (priL  > 0 ? (priL  / 1e9) * _solForFees : null);
         const jitoUsd = pd.jitoTipUsd      != null ? Number(pd.jitoTipUsd)      : (jitoL > 0 ? (jitoL / 1e9) * _solForFees : null);
         const totalCostUsd = (svcUsd ?? 0) + (priUsd ?? 0) + (jitoUsd ?? 0);

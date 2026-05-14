@@ -49,7 +49,41 @@ const FETCH_JSON_ALLOWED = [
   'https://singapore.mainnet.block-engine.jito.wtf',
   'https://bundles.jito.wtf',
   'https://pumpportal.fun',
+  'https://api.binance.com',
 ];
+
+// ── SOL price — fetched on SW startup and refreshed every 5 min ─────────────
+// Background SW can fetch cross-origin freely (no CORS restrictions apply here).
+async function _fetchAndCacheSolPrice() {
+  try {
+    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT');
+    if (!r.ok) return;
+    const d = await r.json();
+    const price = parseFloat(d.price);
+    if (!price || price <= 0 || price > 100_000) return;
+    chrome.storage.local.set({ sendiq_sol_price: price });
+    // Broadcast to all open DEX tabs so page scripts update ns.solPriceUsd immediately
+    const _DEX_URLS = [
+      '*://*.jup.ag/*', '*://*.raydium.io/*', '*://raydium.io/*',
+      '*://pump.fun/*', '*://*.pump.fun/*',
+    ];
+    _DEX_URLS.forEach(pattern => {
+      chrome.tabs.query({ url: pattern }, (tabs) => {
+        if (tabs?.length) tabs.forEach(t =>
+          chrome.tabs.sendMessage(t.id, { type: 'PUSH_SOL_PRICE', price }, () => void chrome.runtime.lastError)
+        );
+      });
+    });
+  } catch (_) {}
+}
+
+// Fetch immediately on every SW startup (covers install, update, and SW wakeup cycles)
+_fetchAndCacheSolPrice();
+// Alarm persists across SW hibernation — wakes the SW and re-fetches every 5 min
+chrome.alarms.create('zq-sol-price', { periodInMinutes: 5 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === 'zq-sol-price') _fetchAndCacheSolPrice();
+});
 
 // ── Extension lifecycle events ───────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {

@@ -21,6 +21,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try { window.postMessage({ type: 'ZENDIQ_ONBOARDED_RESPONSE', value: true }, '*'); } catch (_) {}
     return;
   }
+  // Background refreshed SOL price — relay to MAIN world so ns.solPriceUsd stays current
+  if (msg?.type === 'PUSH_SOL_PRICE') {
+    try { window.postMessage({ type: 'ZENDIQ_SOL_PRICE_UPDATE', price: msg.price }, '*'); } catch (_) {}
+    return;
+  }
   try {
     window.postMessage({ sr_bridge: true, msg }, '*');
   } catch (e) {
@@ -186,6 +191,14 @@ window.addEventListener('message', (e) => {
   }
   if (e.data.type === 'ZENDIQ_SET_FIRST_DEX_VISIT') {
     chrome.storage.local.set({ sendiq_firstDexVisitCompleted: true });
+    return;
+  }
+
+  // ZendIQ: seed ns.solPriceUsd from cached storage value on page load
+  if (e.data.type === 'ZENDIQ_GET_SOL_PRICE') {
+    chrome.storage.local.get(['sendiq_sol_price'], (r) => {
+      try { window.postMessage({ type: 'ZENDIQ_SOL_PRICE_RESPONSE', price: r.sendiq_sol_price ?? null }, '*'); } catch (_) {}
+    });
     return;
   }
 

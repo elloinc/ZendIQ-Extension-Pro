@@ -92,6 +92,10 @@
     // Onboarding — false until user dismisses welcome card (shared with popup via sendiq_onboarded)
     onboarded: null,  // null = not yet loaded from storage; false = not seen; true = seen
 
+    // Live SOL price — seeded from chrome.storage on page load, updated every 5 min via background alarm
+    // Used as fallback when widgetLastPriceData.solPriceUsd is unavailable (pump.fun, Raydium, first boot)
+    solPriceUsd: null,
+
     // pump.fun passive monitor context — set when user clicks Buy on pump.fun bonding curve
     // (no Jupiter routing available; widget shows slippage risk + token risk + execution risk)
     pumpFunContext: null,  // { outputMint, solAmount, slippagePct, risk, tokenScore } | null
@@ -125,7 +129,8 @@
     if (jitoMode === 'always') return { priorityFeeLamports: 500_000, jitoTipLamports: 200_000 };
 
     // SOL price fallback for fee scaling calculations when live price is unavailable
-    const sol = solPriceUsd != null && solPriceUsd > 0 ? solPriceUsd : 150;
+    const sol = solPriceUsd != null && solPriceUsd > 0 ? solPriceUsd
+              : (window.__zq.solPriceUsd != null && window.__zq.solPriceUsd > 0 ? window.__zq.solPriceUsd : 150);
 
     // Combined score: base risk + MEV boost (capped +30 pts).
     // Multiplier 0.5 so MEDIUM MEV (score 25) contributes +13 pts.

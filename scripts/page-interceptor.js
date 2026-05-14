@@ -184,6 +184,10 @@
       ns.onboarded = !!e.data.value;
       try { ns.renderWidgetPanel?.(); } catch (_) {}
     }
+    // SOL price seeded from cache on load, and updated whenever the background alarm fires
+    if (e.data?.type === 'ZENDIQ_SOL_PRICE_RESPONSE' || e.data?.type === 'ZENDIQ_SOL_PRICE_UPDATE') {
+      if (typeof e.data.price === 'number' && e.data.price > 0) ns.solPriceUsd = e.data.price;
+    }
     // First DEX visit — auto-expand to Monitor tab once, then flip flag so it never repeats.
     if (e.data?.type === 'ZENDIQ_FIRST_DEX_VISIT_RESPONSE' && !e.data.completed) {
       window.postMessage({ type: 'ZENDIQ_SET_FIRST_DEX_VISIT' }, '*');
@@ -205,6 +209,8 @@
     }
   });
   window.postMessage({ type: 'ZENDIQ_GET_SETTINGS' }, '*');
+  // Ask bridge for cached SOL price so ns.solPriceUsd is populated before any trade
+  window.postMessage({ type: 'ZENDIQ_GET_SOL_PRICE' }, '*');
   // Ask background for persisted swap history so the widget Activity tab is populated on page load
   window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'GET_HISTORY' } }, '*');
   // Load prior wallet security scan (shared with popup — same secLastResult key)

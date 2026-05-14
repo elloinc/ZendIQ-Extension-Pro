@@ -589,7 +589,7 @@
               ? order_raw.inUsdValue / (Number(amountStr) / 1e9)
               : (outputMint === _SOL_MINT && order_raw.outUsdValue && _jupOut > 0)
                 ? order_raw.outUsdValue / (_jupOut / 1e9)
-                : (ns.widgetLastPriceData?.solPriceUsd ?? 150);
+                : (ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150);
           // Convert lamports -> tokens for each side.
           const _outTokenPriceUsd = (order_raw.outUsdValue && _jupOut > 0) ? order_raw.outUsdValue / _jupOut : null;
           const _tipToTokens = (lamports) =>
@@ -704,7 +704,7 @@
       // silently upgrades (same mechanism as the 10s auto-refresh). If the user signs the
       // gasless order first, the background fetch result is discarded.
       if (_isNoFeeRoute && effectiveMevScore >= 25 && jitoMode !== 'never') {
-        const _solFJito    = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+        const _solFJito    = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
         const _jitoForced  = tradeUsd != null
           ? Math.max(20_000, Math.min(200_000, Math.round(tradeUsd * 0.0008 / _solFJito * 1e9)))
           : 20_000;
@@ -727,7 +727,7 @@
               ns.widgetLastOrder     = _mevOrder;
               ns.widgetLastOrderFees = { priorityFeeLamports: 0, jitoTipLamports: _jitoForced };
               // Re-derive SOL-price-dependent fee costs so the Jito tip shows correctly in UI
-              const _sprice = ns.widgetLastPriceData?.solPriceUsd ?? 150;
+              const _sprice = ns.widgetLastPriceData?.solPriceUsd ?? ns.solPriceUsd ?? 150;
               ns.widgetLastPriceData = {
                 ...ns.widgetLastPriceData,
                 jitoTipUsd: (_jitoForced / 1e9) * _sprice,
@@ -980,7 +980,7 @@
         // SOL price ? lamports). For non-SOL pairs where solPriceUsd couldn't be derived,
         // fall back to lamport arithmetic using a conservative $150 SOL floor so fees
         // are never silently ignored in the net benefit gate.
-        const _solFallback = _pd.solPriceUsd ?? 150;
+        const _solFallback = _pd.solPriceUsd ?? ns.solPriceUsd ?? 150;
         const _priUsd  = _pd.priorityFeeUsd  != null ? _pd.priorityFeeUsd
           : ((ns.widgetLastOrderFees?.priorityFeeLamports ?? 0) / 1e9) * _solFallback;
         const _jitoUsd = _pd.jitoTipUsd      != null ? _pd.jitoTipUsd
@@ -1502,7 +1502,7 @@
         try { if (ns.logProEvent) {
           const _feesSkip = ns.widgetLastOrderFees ?? {};
           const _lpSkip   = ns.widgetLastPriceData ?? {};
-          const _solSkip  = _lpSkip.solPriceUsd ?? 150;
+          const _solSkip  = _lpSkip.solPriceUsd ?? ns.solPriceUsd ?? 150;
           const _sshSkip  = window.location.hostname;
           ns.logProEvent('swap_optimised', {
             site:             _cap?.source === 'raydium' ? 'raydium.io' : _sshSkip.includes('pump') ? 'pump.fun' : 'jup.ag',
@@ -2131,7 +2131,7 @@
         try { if (ns.logProEvent) {
           const _feesMain = ns.widgetLastOrderFees ?? {};
           const _lpMain   = ns.widgetLastPriceData ?? {};
-          const _solMain  = _lpMain.solPriceUsd ?? 150;
+          const _solMain  = _lpMain.solPriceUsd ?? ns.solPriceUsd ?? 150;
           const _sshMain  = window.location.hostname;
           ns.logProEvent('swap_optimised', {
             site:             entry.routeSource === 'raydium' ? 'raydium.io' : _sshMain.includes('pump') ? 'pump.fun' : 'jup.ag',

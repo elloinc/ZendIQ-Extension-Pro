@@ -1383,8 +1383,11 @@
         }
       }
 
-      const legacyWallet = window.phantom?.solana || window.solflare || window.backpack?.solana
-                        || window.braveSolana || window.jupiterWallet || window.jupiter?.solana || window.solana;
+      // window.solana first — the DEX keeps this pointed at the active wallet adapter;
+      // specific wallet globals (window.phantom?.solana etc.) may retain a publicKey
+      // after the user switches away, causing signing to target the wrong wallet.
+      const legacyWallet = window.solana || window.phantom?.solana || window.solflare || window.backpack?.solana
+                        || window.braveSolana || window.jupiterWallet || window.jupiter?.solana;
 
       let signedB64      = null;
       let skippedExecute = false;

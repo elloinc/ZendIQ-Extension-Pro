@@ -259,6 +259,7 @@
   // ── Kick-off wallet detection ────────────────────────────────────────────
   ns.detectAndHookWallet();
   setTimeout(() => ns.scheduleWsProbe(), 0);
+  ns.watchForWalletSwitch(); // re-hooks when user switches wallets in the DEX UI
 
   // Run a few quick scans for globally registered wallets then stop
   const _scanInterval = setInterval(() => ns.scanAndWrapGlobalWallets(), 250);

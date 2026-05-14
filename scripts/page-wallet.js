@@ -11,8 +11,11 @@
   function detectAndHookWallet(attempts) {
     if (attempts === undefined) attempts = 0;
     if (window.solana?.signAndSendTransaction) {
-      if (ns.walletHooked) return;
-      ns.walletHooked = true;
+      // Use object identity — if window.solana changed to a new wallet adapter (user switched
+    // wallets in the DEX), the old boolean guard would wrongly prevent re-hooking the new one.
+    if (ns.walletHooked && ns._hookedSolanaObj === window.solana) return;
+      ns.walletHooked     = true;
+      ns._hookedSolanaObj = window.solana;
       const wallet = window.solana;
 
       const realSignAndSend = wallet.signAndSendTransaction;
@@ -223,9 +226,14 @@
 
   // ── resolveWalletPubkey ──────────────────────────────────────────────────
   function resolveWalletPubkey() {
+    // window.solana first — the DEX sets this to the active wallet adapter, so it is the
+    // most reliable indicator of which wallet is currently in use. Specific globals like
+    // window.phantom?.solana may retain a publicKey even after the user switches away,
+    // which would cause ZendIQ to fetch orders for the wrong taker address.
     const candidates = [
+      window.solana,
       window.phantom?.solana, window.solflare, window.backpack?.solana,
-      window.braveSolana, window.jupiterWallet, window.jupiter?.solana, window.solana,
+      window.braveSolana, window.jupiterWallet, window.jupiter?.solana,
     ];
     for (const w of candidates) {
       if (!w?.publicKey) continue;
@@ -748,7 +756,12 @@
         const orig = feat.signAndSendTransaction.bind(feat);
         feat.__zendiq_hooked_sast = true;
         Object.defineProperty(feat, 'signAndSendTransaction', {
-          get() { return (...args) => zendiqWsOverlay('signAndSendTransaction', orig, args); },
+          get() {
+            // Accessing this getter proves this wallet is the one the DEX is using right now.
+            ns._wsWallet  = w;
+            ns._wsAccount = w.accounts?.[0] ?? ns._wsAccount;
+            return (...args) => zendiqWsOverlay('signAndSendTransaction', orig, args);
+          },
           configurable: true,
         });
       }
@@ -762,13 +775,48 @@
         const orig = feat.signTransaction.bind(feat);
         feat.__zendiq_hooked_st = true;
         Object.defineProperty(feat, 'signTransaction', {
-          get() { return (...args) => zendiqWsOverlay('signTransaction', orig, args); },
+          get() {
+            // Accessing this getter proves this wallet is the one the DEX is using right now.
+            ns._wsWallet  = w;
+            ns._wsAccount = w.accounts?.[0] ?? ns._wsAccount;
+            return (...args) => zendiqWsOverlay('signTransaction', orig, args);
+          },
           configurable: true,
         });
       }
     } catch (e) {
       console.warn('[ZendIQ] Could not hook WS signTransaction:', e.message);
     }
+
+    // Track wallet connect/disconnect — update active wallet state when accounts change.
+    // Fires when the user switches wallets in the DEX UI (Wallet Standard change event).
+    try {
+      if (typeof w.on === 'function' && !w.__zendiq_change_hooked) {
+        w.__zendiq_change_hooked = true;
+        w.on('change', (changes) => {
+          try {
+            if (!changes?.accounts) return;
+            if (changes.accounts.length > 0) {
+              // Wallet just connected or account changed — this is now the active wallet.
+              ns._wsWallet  = w;
+              ns._wsAccount = changes.accounts[0];
+              const _pk = ns._wsAccount?.address;
+              if (_pk) {
+                window.postMessage({ type: 'ZENDIQ_SAVE_WALLET_PUBKEY', pubkey: String(_pk) }, '*');
+                if (ns.setWalletForSession && !ns._sessionLogged) {
+                  ns.setWalletForSession(String(_pk), (w?.name ?? 'unknown').toLowerCase());
+                }
+              }
+            } else if (ns._wsWallet === w) {
+              // This wallet just disconnected — clear so the next resolveWalletPubkey
+              // call picks up the newly active wallet from the registry.
+              ns._wsWallet  = null;
+              ns._wsAccount = null;
+            }
+          } catch (_) {}
+        });
+      }
+    } catch (_) {}
 
     // Wire session analytics — only once per page load.
     // hookWsWallet is called on every resolveWalletPubkey() fallback path (via patchCustomEvent),
@@ -937,6 +985,29 @@
     try { ns.logSession?.('end', { type: 'end', wallet: ns.walletAdapter ?? 'unknown', wallet_hash: ns.walletHash ?? null, dex: _site }); } catch (_) {}
   });
 
+  // ── watchForWalletSwitch ─────────────────────────────────────────────────
+  // Polls window.solana every 1 s to detect when the user changes their connected
+  // wallet in the DEX UI (e.g. from Jupiter Wallet → Phantom). When the reference
+  // changes to an unhooked adapter, clears the boolean guard and re-runs
+  // detectAndHookWallet() so ZendIQ intercepts signing calls on the new wallet.
+  function watchForWalletSwitch() {
+    let _lastRef = window.solana;
+    setInterval(() => {
+      try {
+        const cur = window.solana;
+        if (cur && cur !== _lastRef) {
+          _lastRef = cur;
+          if (!cur.__sr_wrapped) {
+            // window.solana changed to a new (unhooked) wallet adapter — re-hook it.
+            ns.walletHooked     = false;
+            ns._hookedSolanaObj = null;
+            detectAndHookWallet();
+          }
+        }
+      } catch (_) {}
+    }, 1000);
+  }
+
   Object.assign(ns, {
     detectAndHookWallet,
     scheduleWsProbe,
@@ -945,5 +1016,6 @@
     zendiqWsOverlay,
     hookWsWallet,
     handleTransaction,
+    watchForWalletSwitch,
   });
 })();

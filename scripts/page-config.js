@@ -36,9 +36,10 @@
     JITO_AUTO_THRESHOLD: 40,
 
     // ── Mutable shared state ────────────────────────────────────────────
-    walletHooked:    false,
+    walletHooked:     false,
+    _hookedSolanaObj: null,  // which window.solana object was last hooked — allows re-hook on wallet switch
     _sessionLogged:  false,  // true after first session:start — prevents repeat firing
-    _wsWallet:       null,   // Wallet Standard wallet object
+    _wsWallet:       null,   // Wallet Standard wallet object (active/most-recently-used)
     _wsAccount:      null,   // Wallet Standard account for active pubkey
 
     // Priority fee mode — synced from popup settings

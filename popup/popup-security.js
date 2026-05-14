@@ -562,6 +562,15 @@ function refreshSecurityDisplay(newResult) {
 function initSecurityBadge() {
   chrome.storage.local.get(['secLastResult'], ({ secLastResult }) => {
     if (secLastResult) {
+      // If the stored scan belongs to a different wallet, discard it and scan the new one.
+      const pubkeyMismatch = walletPubkey && secLastResult.pubkey && secLastResult.pubkey !== walletPubkey;
+      if (pubkeyMismatch) {
+        _secResult = null;
+        _reviewedAutoApprove = false;
+        _updateSecurityTabColor();
+        if (!_secChecking) runCheck();
+        return;
+      }
       _secResult = secLastResult;
       const key = `secReviewed_${_secResult.walletType ?? 'unknown'}`;
       // Inner callback: restore reviewed state, paint badge, THEN start scan.
@@ -580,6 +589,11 @@ function initSecurityBadge() {
 
 // ── Public: called by popup.js when the Security tab is opened ───────────────
 function loadSecurity() {
+  // If the stored scan belongs to a different wallet, discard it — runCheck will re-scan.
+  if (_secResult?.pubkey && walletPubkey && _secResult.pubkey !== walletPubkey) {
+    _secResult = null;
+    _reviewedAutoApprove = false;
+  }
   // Restore reviewed state from storage if we already have a scan result
   if (_secResult?.walletType && _secResult.walletType !== 'unknown') {
     chrome.storage.local.get([`secReviewed_${_secResult.walletType}`], (data) => {

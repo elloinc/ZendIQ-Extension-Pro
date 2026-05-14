@@ -97,7 +97,16 @@
         opts.detail.register = function (wallet) {
           try {
             hookWsWallet(wallet, wallet?.accounts?.[0] ?? null);
-            if (!ns._wsWallet && wallet) { ns._wsWallet = wallet; ns._wsAccount = wallet?.accounts?.[0] ?? null; }
+            if (!ns._wsWallet) {
+              ns._wsWallet = wallet; ns._wsAccount = wallet?.accounts?.[0] ?? null;
+            } else {
+              // Prefer this wallet if it matches the DEX's active adapter (window.solana).
+              const pk = window.solana?.publicKey?.toString?.();
+              if (pk && wallet?.accounts?.some(a => a?.address === pk)) {
+                ns._wsWallet  = wallet;
+                ns._wsAccount = wallet.accounts.find(a => a?.address === pk) ?? wallet?.accounts?.[0] ?? null;
+              }
+            }
           } catch (e) {
             console.warn('[ZendIQ][WS] hookWsWallet in CustomEvent threw:', e.message);
           }
@@ -112,17 +121,32 @@
   })();
 
   // ── Fallback probe ───────────────────────────────────────────────────────
+  // Helper: from a list of valid WS wallets, prefer the one whose account
+  // matches window.solana (the DEX's active adapter). Handles multi-wallet
+  // environments where e.g. Jupiter Wallet and Phantom are both installed.
+  function _pickBestWsWallet(list) {
+    try {
+      const pk = window.solana?.publicKey?.toString?.();
+      if (pk) {
+        const match = list.find(w => w?.accounts?.some(a => a?.address === pk));
+        if (match) return match;
+      }
+    } catch (_) {}
+    return list[0];
+  }
+
   function probeAndHookWsWallet() {
+    const _valid = (w) => !!(w?.features?.['solana:signAndSendTransaction'] || w?.features?.['solana:signTransaction']);
     try {
       const reg = window.navigator?.wallets ?? window.__wallet_standard_wallets__;
       if (reg) {
-        const list = Array.isArray(reg) ? reg : (reg.get?.() ?? []);
-        for (const w of list) {
-          if (w?.features?.['solana:signAndSendTransaction'] || w?.features?.['solana:signTransaction']) {
-            if (!ns._wsWallet) { ns._wsWallet = w; ns._wsAccount = w.accounts?.[0] ?? null; }
-            hookWsWallet(w, w.accounts?.[0] ?? null);
-            return true;
-          }
+        const list = (Array.isArray(reg) ? reg : (reg.get?.() ?? [])).filter(_valid);
+        if (list.length > 0) {
+          const best = _pickBestWsWallet(list);
+          // Hook ALL registered wallets so we intercept regardless of which one the DEX uses.
+          list.forEach(w => hookWsWallet(w, w.accounts?.[0] ?? null));
+          if (!ns._wsWallet) { ns._wsWallet = best; ns._wsAccount = best?.accounts?.[0] ?? null; }
+          return true;
         }
       }
     } catch (e) { console.warn('[ZendIQ][WS] registry probe error:', e.message); }
@@ -131,12 +155,12 @@
       window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', {
         detail: { register(wallet) { found.push(wallet); } },
       }));
-      for (const w of found) {
-        if (w?.features?.['solana:signAndSendTransaction'] || w?.features?.['solana:signTransaction']) {
-          if (!ns._wsWallet) { ns._wsWallet = w; ns._wsAccount = w.accounts?.[0] ?? null; }
-          hookWsWallet(w, w.accounts?.[0] ?? null);
-          return true;
-        }
+      const list = found.filter(_valid);
+      if (list.length > 0) {
+        const best = _pickBestWsWallet(list);
+        list.forEach(w => hookWsWallet(w, w.accounts?.[0] ?? null));
+        if (!ns._wsWallet) { ns._wsWallet = best; ns._wsAccount = best?.accounts?.[0] ?? null; }
+        return true;
       }
     } catch (e) { console.warn('[ZendIQ][WS] app-ready probe error:', e.message); }
     return false;
@@ -156,8 +180,17 @@
     window.addEventListener('wallet-standard:register-wallet', (e) => {
       const w = e.detail?.wallet ?? e.wallet;
       if (w?.features?.['solana:signAndSendTransaction'] || w?.features?.['solana:signTransaction']) {
-        if (!ns._wsWallet) { ns._wsWallet = w; ns._wsAccount = w.accounts?.[0] ?? null; }
         hookWsWallet(w, w.accounts?.[0] ?? null);
+        if (!ns._wsWallet) {
+          ns._wsWallet = w; ns._wsAccount = w.accounts?.[0] ?? null;
+        } else {
+          // Prefer this wallet if it matches the DEX's active adapter (window.solana).
+          const pk = window.solana?.publicKey?.toString?.();
+          if (pk && w?.accounts?.some(a => a?.address === pk)) {
+            ns._wsWallet  = w;
+            ns._wsAccount = w.accounts.find(a => a?.address === pk) ?? w.accounts?.[0] ?? null;
+          }
+        }
       }
     });
   } catch (_) {}
@@ -1002,6 +1035,22 @@
             ns.walletHooked     = false;
             ns._hookedSolanaObj = null;
             detectAndHookWallet();
+          }
+          // Also update the Wallet Standard active wallet to match the new window.solana
+          // adapter. Handles pump.fun wallet switch: Jupiter Wallet → Phantom, etc.
+          const newPk = cur?.publicKey?.toString?.();
+          if (newPk) {
+            const reg = window.navigator?.wallets ?? window.__wallet_standard_wallets__;
+            if (reg) {
+              const list = Array.isArray(reg) ? reg : (reg.get?.() ?? []);
+              const match = list.find(w =>
+                (w?.features?.['solana:signAndSendTransaction'] || w?.features?.['solana:signTransaction'])
+                && w?.accounts?.some(a => a?.address === newPk));
+              if (match) {
+                ns._wsWallet  = match;
+                ns._wsAccount = match.accounts.find(a => a?.address === newPk) ?? match.accounts?.[0] ?? null;
+              }
+            }
           }
         }
       } catch (_) {}

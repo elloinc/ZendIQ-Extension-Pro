@@ -62,10 +62,14 @@ async function _injectGetPubkey(tabId) {
           return (s && s.length >= 32) ? s : null;
         };
 
+        // window.solana first — the DEX keeps this pointed at the active wallet.
+        // Specific globals like window.phantom?.solana retain their publicKey even
+        // after the user switches away, so checking them first returns the wrong address.
         const legacy = [
+          window.solana,
           window.phantom?.solana, window.solflare,
           window.backpack?.solana, window.jupiterWallet, window.jupiter?.solana,
-          window.okxwallet?.solana, window.solana,
+          window.okxwallet?.solana,
         ].filter(Boolean);
 
         for (const w of legacy) {

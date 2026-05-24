@@ -288,7 +288,8 @@
 
     // ── 3. Absolute trade size (20% weight) ──────────────────────────────────
     let sizeScore, sizeImpact;
-    if (amountUSD > 100_000)     { sizeScore = 20; sizeImpact = `$${amountUSD.toLocaleString()} (whale)`; }
+    if (amountUSD == null)        { sizeScore = 0;  sizeImpact = 'unknown'; }
+    else if (amountUSD > 100_000)     { sizeScore = 20; sizeImpact = `$${amountUSD.toLocaleString()} (whale)`; }
     else if (amountUSD >= 10_000) { sizeScore = 15; sizeImpact = `$${amountUSD.toLocaleString()} (large)`; }
     else if (amountUSD >= 1_000)  { sizeScore = 8;  sizeImpact = `$${amountUSD.toLocaleString()} (medium)`; }
     else                          { sizeScore = 2;  sizeImpact = `$${amountUSD.toLocaleString()} (small)`; }

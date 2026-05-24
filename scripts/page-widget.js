@@ -918,9 +918,7 @@
             const tsTip = `Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW <25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+ (higher = more risk)&#10;&#10;${_tsTipFactors}`;
             const _tsBg     = tsLoaded ? `background:${tsc}11;border:1px solid ${tsc}44` : 'background:rgba(255,181,71,0.05);border:1px solid rgba(255,181,71,0.25)';
             const _tsLblCol = tsLoaded ? tsc : '#FFB547';
-            const _tsFactorRows = tsLoaded && ts.factors?.length
-              ? _factorRows(ts.factors, false)
-              : _SCAN_ROWS;
+            const _tsFactorRows = ns.widgetMode === 'simple' ? '' : (tsLoaded && ts.factors?.length ? _factorRows(ts.factors, false) : _SCAN_ROWS);
             return `<div title="${tsTip}" style="${_tsBg};border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help">
               <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
                 <span style="color:${_tsLblCol};font-weight:600;cursor:help" title="ZendIQ checks the token you are receiving: mint authority (can devs print unlimited tokens?), freeze authority (can devs block your tokens?), top holder concentration, and RugCheck.xyz flags.">Token Risk Score</span>
@@ -1789,9 +1787,7 @@
                 : 'Scanning for rug risk, mint authority, supply concentration and RugCheck.xyz flags\u2026';
               const tsTip = `Token Risk Score \u2014 on-chain + RugCheck.xyz analysis of the token you are buying.&#10;Score 0\u2013100: LOW <25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+ (higher = more risk)&#10;&#10;${_tsTipFactors}`;
 
-              const _tsFactorRows = tsLoaded && _ts.factors?.length
-                ? _factorRows(_ts.factors, false)
-                : _SCAN_ROWS;
+              const _tsFactorRows = ns.widgetMode === 'simple' ? '' : (tsLoaded && _ts.factors?.length ? _factorRows(_ts.factors, false) : _SCAN_ROWS);
 
               return `<div title="${tsTip}" style="${_tsBg};border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help">
                 <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">

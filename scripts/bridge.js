@@ -163,7 +163,8 @@ window.addEventListener('message', (e) => {
           autoAccept:      s.autoAccept      ?? false,
           jitoMode:        s.jitoMode        ?? 'auto',
           profile:         s.profile         ?? 'alert',
-          pauseOnHighRisk: s.pauseOnHighRisk !== false,  // default true
+          pauseOnHighRisk:        s.pauseOnHighRisk !== false,  // default true
+          dynamicSlippageMode: s.dynamicSlippageMode ?? 'shadow',
         },
       }, '*');
     });
@@ -267,6 +268,8 @@ window.addEventListener('message', (e) => {
       if (typeof raw.minRiskLevel === 'string' && VALID_RLEVEL.has(raw.minRiskLevel)) p.minRiskLevel = raw.minRiskLevel;
       if (typeof raw.minLossUsd   === 'number' && isFinite(raw.minLossUsd)   && raw.minLossUsd  >= 0) p.minLossUsd   = raw.minLossUsd;
       if (typeof raw.minSlippage  === 'number' && isFinite(raw.minSlippage)  && raw.minSlippage >= 0) p.minSlippage  = raw.minSlippage;
+      const VALID_DYNSLIP = new Set(['shadow', 'active', 'off']);
+      if (typeof raw.dynamicSlippageMode === 'string' && VALID_DYNSLIP.has(raw.dynamicSlippageMode)) p.dynamicSlippageMode = raw.dynamicSlippageMode;
       chrome.storage.local.get(['settings'], ({ settings: existing = {} }) => {
         chrome.storage.local.set({ settings: { ...existing, ...p } });
       });

@@ -218,6 +218,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('input[name="jito-mode"]').forEach(radio =>
     radio.addEventListener('change', () => { saveSettings(); syncThresholdsToPage(); }));
 
+  // Dynamic slippage mode radio buttons
+  document.querySelectorAll('input[name="dyn-slip-mode"]').forEach(radio =>
+    radio.addEventListener('change', () => { saveSettings(); syncThresholdsToPage(); }));
+
   // ── Restore persisted settings ──────────────────────────────────────────
   restoreSettings();
 

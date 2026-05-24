@@ -162,6 +162,7 @@
       ns.autoProtect        = s.autoProtect  ?? false;
       ns.autoAccept         = s.autoAccept   ?? false;
       ns.pauseOnHighRisk    = s.pauseOnHighRisk !== false; // default true
+      ns.dynamicSlippageMode = s.dynamicSlippageMode ?? 'shadow';
       ns.jitoMode           = s.jitoMode     ?? 'auto';
       ns.settingsProfile    = s.profile      ?? 'alert';
     }

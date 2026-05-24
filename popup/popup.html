@@ -444,6 +444,31 @@
     </div>
   </div>
 
+  <div class="setting-sub">Dynamic Slippage (Raydium bundles)</div>
+  <div class="jito-options" id="dyn-slip-options">
+    <label class="jito-opt">
+      <input type="radio" name="dyn-slip-mode" id="dyn-slip-shadow" value="shadow" checked>
+      <div class="jito-opt-body">
+        <span class="jito-opt-name">Shadow <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(153,69,255,0.15);color:#9945FF;margin-left:4px">Default</span></span>
+        <span class="jito-opt-desc">Compute tightened slippage and log — does not change your trade. Collects data to calibrate safety margins.</span>
+      </div>
+    </label>
+    <label class="jito-opt">
+      <input type="radio" name="dyn-slip-mode" id="dyn-slip-active" value="active">
+      <div class="jito-opt-body">
+        <span class="jito-opt-name">Active</span>
+        <span class="jito-opt-desc">Apply tightened slippage to Raydium+Jito bundle transactions. Collapses sandwich economics — more reverts during volatile markets.</span>
+      </div>
+    </label>
+    <label class="jito-opt">
+      <input type="radio" name="dyn-slip-mode" id="dyn-slip-off" value="off">
+      <div class="jito-opt-body">
+        <span class="jito-opt-name">Off</span>
+        <span class="jito-opt-desc">Use your wallet&rsquo;s original slippage setting. No tightening, no logging.</span>
+      </div>
+    </label>
+  </div>
+
   <!-- Disclaimer -->
   <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
     <div style="font-size:var(--fs-xs);font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);margin-bottom:6px">Disclaimer</div>

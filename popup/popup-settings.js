@@ -39,6 +39,7 @@ function saveSettings() {
     autoAccept:  document.getElementById('auto-accept')?.checked  ?? false,
     pauseOnHighRisk: document.getElementById('pause-on-high-risk')?.checked ?? true,
     jitoMode:    jm,
+    dynamicSlippageMode: document.querySelector('input[name="dyn-slip-mode"]:checked')?.value ?? 'shadow',
     profile, minRiskLevel, minLossUsd, minSlippage,
   }});
 }
@@ -48,6 +49,7 @@ function syncThresholdsToPage() { syncSettingsToPage(); }
 function syncSettingsToPage() {
   const { minRiskLevel, minLossUsd, minSlippage } = _getThreshValues();
   const jm      = document.querySelector('input[name="jito-mode"]:checked')?.value ?? jitoMode;
+  const dsm     = document.querySelector('input[name="dyn-slip-mode"]:checked')?.value ?? 'shadow';
   const profile = document.querySelector('.profile-btn.active')?.dataset.profile ?? 'alert';
   const aprot   = document.getElementById('auto-protect')?.checked  ?? false;
   const aaccept = document.getElementById('auto-accept')?.checked   ?? false;
@@ -57,7 +59,7 @@ function syncSettingsToPage() {
     if (!tab?.id) return;
     chrome.scripting.executeScript({
       target: { tabId: tab.id }, world: 'MAIN',
-      func: (r, l, s, jito, prof, ap, aa, ui, phr) => {
+      func: (r, l, s, jito, prof, ap, aa, ui, phr, dsm) => {
         if (!window.__zq) return;
         window.__zq.threshMinRiskLevel = r;
         window.__zq.threshMinLossUsd   = l;
@@ -68,9 +70,10 @@ function syncSettingsToPage() {
         window.__zq.autoAccept         = aa;
         window.__zq.widgetMode         = ui;
         window.__zq.pauseOnHighRisk    = phr;
+        window.__zq.dynamicSlippageMode = dsm;
         window.__zq.renderWidgetPanel?.();
       },
-      args: [minRiskLevel, minLossUsd, minSlippage, jm, profile, aprot, aaccept, uiMode, pauseHR],
+      args: [minRiskLevel, minLossUsd, minSlippage, jm, profile, aprot, aaccept, uiMode, pauseHR, dsm],
     }).catch(() => {});
   }).catch(() => {});
 }
@@ -149,6 +152,10 @@ function restoreSettings() {
     jitoMode = savedJito;
     const radio = document.getElementById('jito-' + savedJito);
     if (radio) radio.checked = true;
+    // Restore dynamic slippage mode
+    const savedDsm = s.dynamicSlippageMode ?? 'shadow';
+    const dsmRadio = document.getElementById('dyn-slip-' + savedDsm);
+    if (dsmRadio) dsmRadio.checked = true;
     syncThresholdsToPage();
   });
 }

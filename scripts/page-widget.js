@@ -68,6 +68,7 @@
           minRiskLevel: ns.threshMinRiskLevel  ?? 'LOW',
           minLossUsd:   ns.threshMinLossUsd    ?? 0,
           minSlippage:  ns.threshMinSlippage   ?? 0,
+          dynamicSlippageMode: ns.dynamicSlippageMode ?? 'shadow',
         },
       }, '*');
     } catch (_) {}
@@ -143,6 +144,17 @@
       radio.onchange = () => {
         if (radio.checked) {
           ns.jitoMode = radio.value;
+          _saveWidgetSettings();
+          renderWidgetPanel();
+        }
+      };
+    });
+
+    // Dynamic slippage mode radios
+    bodyInner.querySelectorAll('input[name="sr-dyn-slip"]').forEach(radio => {
+      radio.onchange = () => {
+        if (radio.checked) {
+          ns.dynamicSlippageMode = radio.value;
           _saveWidgetSettings();
           renderWidgetPanel();
         }
@@ -1649,6 +1661,27 @@
             priUsd != null ? _qFmt(priUsd) : (priL > 0 ? `+${(priL/1e9).toFixed(5)} SOL` : 'Auto'),
             pfColor);
           if (jitoL > 0) _parts += _qSub('<span title="An optional Jito tip to incentivise fast landing. Routed through Jupiter\'s execution engine — NOT a Jito bundle; an embedded account blocks third-party bundling." style="cursor:help">Jito Tip (via Jupiter)</span>', jitoUsd != null ? _qFmt(jitoUsd) : `+${(jitoL/1e9).toFixed(5)} SOL`, '#9945FF');
+          // Slippage protection row — Raydium+Jito bundle path only.
+          // Shadow mode: shows the computed tightened value with a "(shadow)" label so advanced users
+          // can see what would have happened without any change to the actual trade.
+          // Active mode: shows the original vs tightened value. Override: shows amber "overridden" label.
+          if (_isRdmBundle && ns._dynSlipData) {
+            const _dso        = ns._dynSlipData;
+            const _origPct    = (_dso.originalBps / 100).toFixed(1) + '%';
+            const _tightPct   = (_dso.tightenedBps / 100).toFixed(1) + '%';
+            const _isShadow   = ns.dynamicSlippageMode === 'shadow';
+            const _isOverride = !!ns._dynSlipOverride;
+            const _dsLabel    = _isShadow
+              ? `${_origPct} (shadow — logging only)`
+              : (_isOverride ? `${_origPct} (protection off)` : `${_origPct} → ${_tightPct}`);
+            const _dsColor    = _isShadow ? '#C2C2D4' : (_isOverride ? '#FFB547' : '#14F195');
+            const _dsTipTxt   = _isShadow
+              ? `Shadow mode: ZendIQ computed a tightened slippage of ${_tightPct} for this trade (down from your ${_origPct} setting) but is NOT applying it yet. Shadow mode logs data only to calibrate safety margins before production rollout.`
+              : (_isOverride
+                ? `Protection overridden: your original ${_origPct} slippage is being used for this trade. ZendIQ protection will re-enable on the next swap.`
+                : `Slippage tightened from ${_origPct} to ${_tightPct} — price impact (${(_dso.priceImpactBps/100).toFixed(2)}%) + ${(_dso.marginBps/100).toFixed(1)}% safety margin for ${_dso.tokenClass} token class. Collapses sandwich economics by leaving no gap to extract value.`);
+            _parts += _qSub(`<span style="cursor:help" title="${_dsTipTxt.replace(/"/g,'&quot;')}">Slippage protection</span>`, _dsLabel, _dsColor);
+          }
           _parts += `<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px;padding-top:6px;border-top:1px solid rgba(153,69,255,0.18)">` +
                 `<span style="color:#C2C2D4;font-size:13px;font-weight:600;cursor:help" title="${_netTooltip}">Est. Net Benefit</span>` +
                 `<span style="color:${netStrColor};font-size:13px;font-weight:700">${netStr}</span>` +
@@ -1950,6 +1983,9 @@
               return _signBtn + _origBtnSecondary;
             })()}
             <button id="sr-btn-widget-cancel" style="width:100%;padding:8px;margin-top:6px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:transparent;color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">✕ Cancel — click Swap to retry</button>
+            ${(_isRdmBundle && ns._dynSlipData && ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride)
+              ? `<button id="sr-btn-dynslip-override" title="Use your original ${(ns._dynSlipData.originalBps/100).toFixed(1)}% slippage for this trade only. Dynamic protection re-enables on the next swap." style="width:100%;padding:8px;margin-top:5px;border:1px solid rgba(255,181,71,0.25);border-radius:8px;background:transparent;color:#FFB547;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">Use original ${(ns._dynSlipData.originalBps/100).toFixed(1)}% slippage (disable protection this trade)</button>`
+              : ''}
             <div style="text-align:center;font-size:9px;color:#4A4A6A;margin-top:8px;line-height:1.4">Not financial advice &middot; use at own risk &middot; profit is NOT guaranteed</div>
             <div style="text-align:center;font-size:12px;color:#4A4A6A;margin-top:4px">${(() => {
               const ms = ns.widgetLastQuoteFetchedAt ? Date.now() - ns.widgetLastQuoteFetchedAt : null;
@@ -2237,6 +2273,28 @@
                   <input type="radio" name="sr-jito" value="${m.value}" ${active?'checked':''} style="accent-color:#9945FF;cursor:pointer;flex-shrink:0;width:13px;height:13px;margin:0">
                   <div>
                     <div style="font-size:13px;font-weight:700;color:${active?'#E8E8F0':'#C2C2D4'}">${m.label}</div>
+                    <div style="font-size:9px;color:#C2C2D4">${m.desc}</div>
+                  </div>
+                </label>`;
+              }).join('');
+            })()}
+          </div>
+
+          <!-- Dynamic Slippage (Raydium bundles) -->
+          <div style="margin-bottom:14px">
+            <div style="font-size:13px;text-transform:uppercase;letter-spacing:0.8px;color:#C2C2D4;margin-bottom:6px">Dynamic Slippage (Raydium bundles)</div>
+            ${(function() {
+              const dsModes = [
+                { value: 'shadow', label: 'Shadow', badge: 'Default', desc: 'Compute + log tightened slippage — does not change your trade' },
+                { value: 'active', label: 'Active', badge: null,     desc: 'Apply tightened slippage to Raydium+Jito bundles to collapse sandwich economics' },
+                { value: 'off',    label: 'Off',    badge: null,     desc: 'Use original slippage; no tightening or logging' },
+              ];
+              return dsModes.map(m => {
+                const active = (ns.dynamicSlippageMode ?? 'shadow') === m.value;
+                return `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:4px;border-radius:6px;cursor:pointer;border:1px solid ${active?'rgba(153,69,255,0.5)':'rgba(153,69,255,0.15)'};background:${active?'rgba(153,69,255,0.08)':'rgba(255,255,255,0.02)'}">
+                  <input type="radio" name="sr-dyn-slip" value="${m.value}" ${active?'checked':''} style="accent-color:#9945FF;cursor:pointer;flex-shrink:0;width:13px;height:13px;margin:0">
+                  <div>
+                    <div style="font-size:13px;font-weight:700;color:${active?'#E8E8F0':'#C2C2D4'}">${m.label}${m.badge ? ` <span style="font-size:7px;font-weight:700;padding:1px 4px;border-radius:3px;background:rgba(153,69,255,0.15);color:#9945FF;letter-spacing:0.3px">${m.badge}</span>` : ''}</div>
                     <div style="font-size:9px;color:#C2C2D4">${m.desc}</div>
                   </div>
                 </label>`;
@@ -3161,6 +3219,30 @@
       renderWidgetPanel();
     };
     if (retryBtn) retryBtn.onclick = () => ns.fetchWidgetQuote();
+
+    // Override button: user wants original slippage for this trade only.
+    const dynSlipOverrideBtn = bodyInner.querySelector('#sr-btn-dynslip-override');
+    if (dynSlipOverrideBtn) dynSlipOverrideBtn.onclick = () => {
+      if (ns.logDynSlip && ns._dynSlipData) {
+        try {
+          ns.logDynSlip({
+            user_slip_bps:    ns._dynSlipData.originalBps,
+            tightened_bps:    ns._dynSlipData.tightenedBps,
+            token_class:      ns._dynSlipData.tokenClass,
+            price_impact_bps: ns._dynSlipData.priceImpactBps,
+            shadow_mode:      false,
+            override_applied: true,
+            active:           false,
+            outcome:          'overridden',
+            ts:               Date.now(),
+          });
+        } catch (_) {}
+      }
+      ns._dynSlipOverride = true;
+      // Update slippageBps in sign params so the next pre-sign re-fetch also uses original slippage
+      if (ns._rdmSignParams) ns._rdmSignParams.slippageBps = ns._dynSlipData.originalBps;
+      renderWidgetPanel();
+    };
 
 
     // ── Site adapter button delegation ──────────────────────────────────────────

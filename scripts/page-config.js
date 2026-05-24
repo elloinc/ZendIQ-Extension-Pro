@@ -97,6 +97,14 @@
     // Used as fallback when widgetLastPriceData.solPriceUsd is unavailable (pump.fun, Raydium, first boot)
     solPriceUsd: null,
 
+    // Dynamic slippage (bundle-only) — tightens slippage on Raydium+Jito bundle trades to collapse sandwich economics.
+    // 'shadow' = compute + log only, never override (default, safe to ship — measures revert rate before enabling).
+    // 'active' = compute + apply tightened slippage to bundle tx minimumAmountOut.
+    // 'off'    = feature entirely disabled.
+    dynamicSlippageMode: 'shadow',
+    _dynSlipData:     null,   // {tightenedBps, originalBps, marginBps, tokenClass, priceImpactBps} | null
+    _dynSlipOverride: false,  // true when user clicks "Use original X% instead" on the current trade
+
     // pump.fun passive monitor context — set when user clicks Buy on pump.fun bonding curve
     // (no Jupiter routing available; widget shows slippage risk + token risk + execution risk)
     pumpFunContext: null,  // { outputMint, solAmount, slippagePct, risk, tokenScore } | null
@@ -181,6 +189,59 @@
     }
 
     return { priorityFeeLamports: priorityFee, jitoTipLamports: jitoTip };
+  };
+
+  // ── Dynamic slippage calculator (bundle-only) ────────────────────────────
+  // Computes a tighter slippage value for Raydium+Jito bundle transactions.
+  // Sandwich economics collapse when minimumAmountOut is set just above the expected
+  // price impact — attackers can't extract meaningful value without triggering a revert.
+  //
+  // target_slippage = expected_price_impact + safety_margin_by_token_class
+  //
+  // Returns { tightenedBps, originalBps, marginBps, tokenClass, priceImpactBps }
+  // or null when tightening is not applicable (no impact data, or already tight enough).
+  window.__zq.calcDynSlippage = function ({ priceImpactPct, originalSlippageBps, tokenScore } = {}) {
+    if (priceImpactPct == null) return null; // can't tighten without impact data
+
+    // Convert Jupiter's raw fraction (e.g. 0.007 = 0.7%) → basis points
+    const pi     = Math.abs(parseFloat(priceImpactPct) || 0);
+    const piBps  = Math.ceil(pi * 100 * 100);  // fraction → % → bps
+
+    // Token class from existing tokenScoreResult signals — no new classifier needed.
+    // Stable mints get tight margin; CRITICAL-risk tokens get wider headroom for
+    // legitimate volatility; everything else scales linearly between them.
+    const STABLE_MINTS = new Set([
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    ]);
+    let tokenClass = 'established'; // default (LOW risk, non-stable)
+    const lvl = tokenScore?.level ?? null;
+    if (lvl === 'CRITICAL') {
+      tokenClass = 'fresh_launch';  // high legitimate volatility — widest headroom
+    } else if (lvl === 'HIGH') {
+      tokenClass = 'memecoin';
+    } else if (lvl === 'MEDIUM') {
+      tokenClass = 'low_cap';
+    } else if (lvl === 'LOW' && STABLE_MINTS.has(tokenScore?.mint)) {
+      tokenClass = 'stable';
+    }
+
+    // CRITICAL (fresh_launch): skip entirely in v1 — these tokens have too much legitimate
+    // price volatility for a fixed margin to be safe. Shadow data will calibrate a future margin.
+    if (tokenClass === 'fresh_launch') return null;
+
+    // Safety margin: headroom for legitimate price drift between quote and execution.
+    // v0 calibration — tune from shadow-mode telemetry before enabling 'active' mode.
+    const MARGIN_BPS = { stable: 30, established: 75, low_cap: 150, memecoin: 175, fresh_launch: 250 };
+    const marginBps  = MARGIN_BPS[tokenClass] ?? 75;
+
+    const tightenedBps = piBps + marginBps;
+
+    // Guard: only tighten if it would make a real difference vs the user's setting,
+    // and only when the computed value is at least 10 bps (never near-zero slippage).
+    if (tightenedBps >= (originalSlippageBps ?? 50) || tightenedBps < 10) return null;
+
+    return { tightenedBps, originalBps: originalSlippageBps ?? 50, marginBps, tokenClass, priceImpactBps: piBps };
   };
 
   // ── Site adapter registry helpers ────────────────────────────────────────

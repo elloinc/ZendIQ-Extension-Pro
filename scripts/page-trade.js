@@ -407,8 +407,15 @@
   //               swaps in new tx silently, ignores transient errors.
   async function fetchWidgetQuote(silent = false, noAutoAccept = false) {
     if (!ns.widgetCapturedTrade) return;
-    // pump.fun uses bonding-curve fills ? no Jupiter order endpoint available
+    // pump.fun uses bonding-curve fills — no Jupiter order endpoint available
     if (window.location.hostname.includes('pump.fun')) return;
+
+    // Reset per-trade dynamic slippage state so previous trade never bleeds into the next.
+    // _dynSlipData: always recomputed on each fetch (fresh price-impact from Raydium).
+    // _dynSlipOverride: only reset on genuinely new fetches — silent re-fetches inside
+    // signWidgetSwap (step 3 fallback) must preserve an override the user already set.
+    if (!silent) { ns._dynSlipOverride = false; }
+    ns._dynSlipData = null;
 
     if (!silent) {
       ns.widgetSwapStatus      = 'fetching';
@@ -651,12 +658,48 @@
               order = order_raw;
               ns._rdmSignParams = null;
             } else {
+            // Compute dynamic slippage from Raydium's actual price impact (more accurate than
+            // Jupiter's live-tick priceImpactPct which may be stale or zero for liquid pairs).
+            // Shadow mode: compute + log but do NOT change the stored slippageBps.
+            // Active mode: use tightenedBps so the sign-time minimumAmountOut is tighter.
+            if (ns.dynamicSlippageMode !== 'off' && !ns._dynSlipOverride) {
+              const _dynCalc = ns.calcDynSlippage?.({
+                priceImpactPct:    _rdmData.priceImpactPct ?? null,
+                originalSlippageBps: ns.widgetCapturedTrade.originalSlippageBps ?? 50,
+                tokenScore:        ns.tokenScoreResult,
+              }) ?? null;
+              ns._dynSlipData = _dynCalc;
+              // Emit shadow-mode telemetry immediately so we get coverage even before 'active' ships.
+              if (_dynCalc && ns.dynamicSlippageMode === 'shadow' && ns.logDynSlip) {
+                ns.logDynSlip({
+                  user_slip_bps:   _dynCalc.originalBps,
+                  tightened_bps:   _dynCalc.tightenedBps,
+                  token_class:     _dynCalc.tokenClass,
+                  price_impact_bps: _dynCalc.priceImpactBps,
+                  shadow_mode:     true,
+                  override_applied: false,
+                  active:          false,
+                  outcome:         'shadow_log',
+                  // Raw token threshold amounts — critical for computing "would this have breached?"
+                  // when actual on-chain output arrives via fetchActualOut (~3-10s later).
+                  // Backend joins on the surrounding HISTORY_UPDATE tx_sig to correlate.
+                  quoted_out_raw:        _rdmData.outputAmount != null ? Math.round(Number(_rdmData.outputAmount)) : null,
+                  min_out_original_raw:  _rdmData.outputAmount != null ? Math.floor(Number(_rdmData.outputAmount) * (1 - _dynCalc.originalBps  / 10000)) : null,
+                  min_out_tightened_raw: _rdmData.outputAmount != null ? Math.floor(Number(_rdmData.outputAmount) * (1 - _dynCalc.tightenedBps / 10000)) : null,
+                  ts:              Date.now(),
+                });
+              }
+            }
+            const _effectiveSlipBps = (ns._dynSlipData && ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride)
+              ? ns._dynSlipData.tightenedBps
+              : (ns.widgetCapturedTrade.originalSlippageBps ?? 50);
+
             // Store the compute params needed to re-build a fresh TX at sign time.
-            // Pool state changes every few seconds ? a fresh TX build right before signing
+            // Pool state changes every few seconds — a fresh TX build right before signing
             // ensures the otherAmountThreshold matches the current on-chain price.
             ns._rdmSignParams = {
               inputMint, outputMint, amountStr: _rdmAmountStr,
-              slippageBps: ns.widgetCapturedTrade.originalSlippageBps ?? 50,
+              slippageBps: _effectiveSlipBps,
               walletPubkey, priorityFeeLamports: _rdmBundling ? 0 : (priorityFeeLamports ?? 0),
               inAcc: _inAccForTx, outAcc: _rdmOutAcc,
               // Store the compute outputAmount so fetchWidgetQuote can use it as the real
@@ -1186,7 +1229,31 @@
       if (_msg.includes('insufficient funds') || _msg.includes('insufficient balance')) {
         _friendlyMsg = 'Not enough balance for this swap ? top up your wallet and try again';
       } else if (_msg.includes('slippage') || _msg.includes('price impact')) {
-        _friendlyMsg = 'Price moved too much ? try increasing slippage tolerance';
+        // When dynamic slippage is active and it was this tightened threshold that triggered
+        // the revert, give a helpful contextual message + log the outcome.
+        const _dsActive = ns._dynSlipData && ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride;
+        if (_dsActive) {
+          const _orig   = (ns._dynSlipData.originalBps / 100).toFixed(1);
+          const _tight  = (ns._dynSlipData.tightenedBps / 100).toFixed(1);
+          _friendlyMsg = `Trade protected \u2014 price moved past your ${_tight}% threshold (tightened from ${_orig}%). This likely blocked a sandwich attack. Refresh the quote and try again \u2014 or click \u201cUse original slippage\u201d to override protection for this trade.`;
+          if (ns.logDynSlip) {
+            try {
+              ns.logDynSlip({
+                user_slip_bps:    ns._dynSlipData.originalBps,
+                tightened_bps:    ns._dynSlipData.tightenedBps,
+                token_class:      ns._dynSlipData.tokenClass,
+                price_impact_bps: ns._dynSlipData.priceImpactBps,
+                shadow_mode:      false,
+                override_applied: false,
+                active:           true,
+                outcome:          'reverted',
+                ts:               Date.now(),
+              });
+            } catch (_) {}
+          }
+        } else {
+          _friendlyMsg = 'Price moved too much \u2014 try increasing slippage tolerance';
+        }
       } else if (_msg.includes('rate limit') || _msg.includes('429')) {
         _friendlyMsg = 'Rate limited ? please wait a moment and retry';
       } else {
@@ -1271,7 +1338,14 @@
           // validator state, which can diverge from Raydium's compute API state. Too tight
           // a minimumAmountOut causes Jito to drop the bundle as Invalid (not Failed).
           // The display/comparison quote still uses the user's real slippage setting.
-          const _txSlippage = 100; // 1% slippage floor for the bundle tx minimumAmountOut
+          // Sign-time slippage: use dynamic-tightened value when active, else the compute-stage
+          // value from _rdmSignParams (which already reflects active/shadow setting).
+          // Hard floor of 20 bps — Jito simulation diverges slightly from Raydium's compute
+          // state, so near-zero minimumAmountOut triggers Invalid bundle drops.
+          const _signDynSlip = (ns._dynSlipData && ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride)
+            ? ns._dynSlipData.tightenedBps
+            : (_sp.slippageBps ?? 100);
+          const _txSlippage = Math.max(_signDynSlip, 20);
           const _freshCompute = await fetchRaydiumQuote(_sp.inputMint, _sp.outputMint, _sp.amountStr, _txSlippage);
           if (_freshCompute?.data?.outputAmount) {
             // Output account: look up at sign time (ATA may have been created since quote).
@@ -2182,6 +2256,32 @@
           } } catch (_) {}
         } } catch (_) {}
 
+        // Dynamic slippage landing telemetry (Raydium+Jito bundle path only)
+        if (ns._dynSlipData && ns.dynamicSlippageMode !== 'off' && ns.logDynSlip) {
+          try {
+            const _ldSignedOut = _signedOutAmount != null ? Number(_signedOutAmount) : null;
+            ns.logDynSlip({
+              user_slip_bps:    ns._dynSlipData.originalBps,
+              tightened_bps:    ns._dynSlipData.tightenedBps,
+              token_class:      ns._dynSlipData.tokenClass,
+              price_impact_bps: ns._dynSlipData.priceImpactBps,
+              shadow_mode:      ns.dynamicSlippageMode === 'shadow',
+              override_applied: !!ns._dynSlipOverride,
+              active:           ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride,
+              outcome:          'landed',
+              tx_sig:           sig ?? null,
+              // Threshold amounts in raw token units — used by shadow-mode backend analysis.
+              // actual_out_raw arrives later via fetchActualOut → HISTORY_UPDATE.quoteAccuracy;
+              // backend joins on tx_sig to compute "would tightened threshold have blocked this?"
+              quoted_out_raw:        _ldSignedOut,
+              min_out_original_raw:  _ldSignedOut != null ? Math.floor(_ldSignedOut * (1 - ns._dynSlipData.originalBps  / 10000)) : null,
+              min_out_tightened_raw: _ldSignedOut != null ? Math.floor(_ldSignedOut * (1 - ns._dynSlipData.tightenedBps / 10000)) : null,
+              trade_size_usd:   entry.inUsdValue != null ? Math.min(Number(entry.inUsdValue), 50000) : null,
+              ts:               Date.now(),
+            });
+          } catch (_) {}
+        }
+
         // Fire-and-forget: poll Solana RPC for actual on-chain output and update the entry
         if (sig && captured?.outputMint) {
           (async () => {
@@ -2342,6 +2442,57 @@
         ns.widgetSwapError  = e.message === '__bundle_slot_miss__'
           ? 'No Jito leader slot available ? click Swap to retry (usually resolves immediately)'
           : 'Bundle did not land ? click Swap to try again';
+        ns.widgetSwapStatus = 'error';
+        ns.renderWidgetPanel();
+        return;
+      }
+      // Dynamic slippage active-mode revert: Jito bundle landed on-chain but failed because
+      // our tightened minimumAmountOut blocked a sandwich-extracted fill.
+      // Compute the counterfactual extraction window so telemetry proves the protection worked.
+      const _dsSignActive  = ns._dynSlipData && ns.dynamicSlippageMode === 'active' && !ns._dynSlipOverride;
+      const _isOnChainFail = typeof e.message === 'string' && e.message.includes('Jito tx failed on-chain');
+      if (_dsSignActive && _isOnChainFail) {
+        const _oa       = _signedOutAmount != null ? Number(_signedOutAmount) : null;
+        const _outDec   = ns.widgetCapturedTrade?.outputDecimals ?? 6;
+        const _oprice   = ns.widgetLastPriceData?.outputPriceUsd ?? null;
+        const _minOrig  = _oa != null ? Math.floor(_oa * (1 - ns._dynSlipData.originalBps  / 10000)) : null;
+        const _minTight = _oa != null ? Math.floor(_oa * (1 - ns._dynSlipData.tightenedBps / 10000)) : null;
+        // Extraction window = tokens the loose threshold exposed vs the tightened one.
+        // tightenedBps < originalBps → _minTight > _minOrig → difference is positive.
+        const _exRaw    = (_minOrig != null && _minTight != null) ? (_minTight - _minOrig) : null;
+        const _cfUsd    = (_exRaw != null && _oprice != null) ? (_exRaw / Math.pow(10, _outDec)) * _oprice : null;
+        const _orig_s   = (ns._dynSlipData.originalBps  / 100).toFixed(1);
+        const _tight_s  = (ns._dynSlipData.tightenedBps / 100).toFixed(1);
+        // Only surface the dollar figure when it's meaningful — small amounts ($<1) read as
+        // "protection fired over nothing" and train users to override. Below the threshold
+        // we keep the message but drop the number.
+        const _cfSuffix = (_cfUsd != null && _cfUsd >= 1) ? ` — blocked ~$${_cfUsd.toFixed(2)} extraction` : '';
+        if (ns.logDynSlip) {
+          try {
+            ns.logDynSlip({
+              user_slip_bps:        ns._dynSlipData.originalBps,
+              tightened_bps:        ns._dynSlipData.tightenedBps,
+              token_class:          ns._dynSlipData.tokenClass,
+              price_impact_bps:     ns._dynSlipData.priceImpactBps,
+              shadow_mode:          false,
+              override_applied:     false,
+              active:               true,
+              outcome:              'reverted',
+              tx_sig:               null,
+              quoted_out_raw:       _oa,
+              min_out_original_raw: _minOrig,
+              min_out_tightened_raw: _minTight,
+              counterfactual_usd:   _cfUsd,
+              trade_size_usd:       ns.widgetLastPriceData?.amountInUsd != null ? Math.min(Number(ns.widgetLastPriceData.amountInUsd), 50000) : null,
+              ts:                   Date.now(),
+            });
+          } catch (_) {}
+        }
+        ns.widgetSnapBaselineRawOut   = null;
+        ns.widgetSnapNetUsd           = null;
+        ns.widgetSnapSavingsUsd       = null;
+        ns.widgetSnapMevProtectionUsd = null;
+        ns.widgetSwapError  = `Trade protected \u2014 price moved past ${_tight_s}% threshold (tightened from ${_orig_s}%)${_cfSuffix}. Refresh the quote and retry \u2014 or click \u201cUse original slippage\u201d to override.`;
         ns.widgetSwapStatus = 'error';
         ns.renderWidgetPanel();
         return;

@@ -44,8 +44,12 @@
   ns.logTrade   = (data)        => _send('trade',   data.user_action ?? 'trade', data);
   ns.logSession = (type, data)  => _send('session', type, data);
   ns.logFunnel  = (event, data) => _send('funnel',  event, { event, ...(data ?? {}) });
-  ns.logMev     = (data)        => _send('mev',     'mev_detection', data);
-  ns.logError   = (cat, data)   => _send('error',   cat, data);
+  ns.logMev      = (data)        => _send('mev',      'mev_detection', data);
+  ns.logError    = (cat, data)   => _send('error',    cat, data);
+  // Dynamic slippage telemetry — fires per trade when dynamicSlippageMode !== 'off'.
+  // Fields: user_slip_bps, tightened_bps, token_class, price_impact_bps,
+  //         shadow_mode, override_applied, active, outcome ('landed'|'reverted'|'overridden'), ts, trade_size_usd?
+  ns.logDynSlip  = (data)        => _send('slippage', 'dyn_slip', data);
 
   // ── Wallet hash helper ────────────────────────────────────────────────────
   // SHA-256 of wallet address, first 12 hex chars. Non-reversible dedup token.

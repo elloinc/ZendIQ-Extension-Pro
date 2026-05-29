@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ZendIQ Pro \u2013 Smart Trade Routing",
-  "version": "0.7.29",
+  "version": "0.7.30",
   "minimum_chrome_version": "104",
   "description": "Solana swap optimiser with MEV protection. Real-time risk scoring on Jupiter, Raydium \u0026 Pump.fun \u2014 before you sign.",
   "homepage_url": "https://zendiq.ai",
@@ -28,7 +28,9 @@
     "https://bundles.jito.wtf/*",
     "https://pumpportal.fun/*",
     "https://zendiq-backend.onrender.com/*",
-    "https://api.binance.com/*"
+    "https://api.binance.com/*",
+    "https://axiom.trade/*",
+    "https://*.axiom.trade/*"
   ],
   "content_scripts": [
     {
@@ -78,6 +80,31 @@
       ],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
+      ],
+      "js": [
+        "scripts/bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": [
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
+      ],
+      "js": [
+        "scripts/page-config.js",
+        "scripts/page-utils.js",
+        "scripts/page-token-score.js",
+        "scripts/page-axiom.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "icons": {
@@ -108,7 +135,9 @@
         "https://raydium.io/*",
         "https://*.raydium.io/*",
         "https://pump.fun/*",
-        "https://*.pump.fun/*"
+        "https://*.pump.fun/*",
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
       ]
     }
   ]

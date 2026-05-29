@@ -122,6 +122,10 @@
     _pumpDerivedGlobals: null,    // cached on-chain-derived { global, feeRecip, evtAuth } for current _PUMP_PROG
     _pumpTxTemplate: null,        // cached full tx account template from network tap (allKeys + buyIxAcctIndices + msgHeader)
 
+    // ── Axiom.trade adapter state ────────────────────────────────────────
+    axiomSessionPubkey: null,     // active session wallet pubkey; updated on every wallet switch
+    axiomPositions:     new Map(), // Map<walletAddress, {wallet, token, openedAt}> — open positions
+
     // ── Site adapter registry ────────────────────────────────────────────
     _siteAdapters: [],  // populated by page-pump.js, page-raydium.js, etc.
 

@@ -8,6 +8,36 @@
 try { document.documentElement.dataset.zendiqVersion = chrome.runtime.getManifest().version; } catch (_) {}
 try { document.documentElement.dataset.zendiqIcon = chrome.runtime.getURL('assets/icon-48.png'); } catch (_) {}
 
+// ── SW keepalive: persistent port ────────────────────────────────────────────
+// Chrome MV3 service workers sleep after ~30 s of inactivity. On axiom.trade
+// there is no background message traffic (no Jupiter live ticks), so the SW is
+// almost always cold when token scoring fires — causing 3–4 s cold-start delays
+// that eat the entire timeout budget.
+//
+// An open chrome.runtime.connect() port counts as activity and keeps the SW
+// alive for the port's entire lifetime (this tab's session). bridge.js loads at
+// document_start so the SW wakes immediately when the page opens — well before
+// the user can navigate to a token and trigger fetchTokenScore.
+//
+// A 20 s heartbeat message guards against Chrome silently dropping idle ports.
+// On disconnect (extension reload / SW restart) we reconnect after 1 s.
+;(function _swKeepalive() {
+  let _port = null;
+  function _connect() {
+    try {
+      _port = chrome.runtime.connect({ name: 'zq-keepalive' });
+      _port.onDisconnect.addListener(() => {
+        void chrome.runtime.lastError; // consume the error so Chrome doesn't log it
+        _port = null;
+        setTimeout(_connect, 1000);   // reconnect once SW has restarted
+      });
+    } catch (_) {}
+  }
+  _connect();
+  // Heartbeat: keeps the port (and therefore the SW) alive during long idle periods.
+  setInterval(() => { try { _port?.postMessage({ type: 'zq-ping' }); } catch (_) {} }, 20_000);
+})();
+
 // ── background → page ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // PUSH_SEC_RESULT: relay as plain ZENDIQ_SEC_RESULT_RESPONSE (interceptor's first
@@ -104,6 +134,24 @@ window.addEventListener('message', (e) => {
       });
     } catch (err) {
       if (!err?.message?.includes('context')) console.warn('[ZendIQ][bridge] RPC_CALL error', err?.message);
+    }
+    return;
+  }
+
+  // RPC_BATCH: batch multiple Solana RPC methods in a single HTTP request to avoid rate-limiting
+  if (e.data.sr_bridge_to_ext && e.data.msg?.type === 'RPC_BATCH') {
+    const { calls, _id } = e.data.msg;
+    try {
+      chrome.runtime.sendMessage({ type: 'RPC_BATCH', calls }, (res) => {
+        if (chrome.runtime.lastError) {
+          if (!chrome.runtime.lastError.message?.includes('context'))
+            console.warn('[ZendIQ][bridge] RPC_BATCH bg error', chrome.runtime.lastError.message);
+          return;
+        }
+        try { window.postMessage({ sr_bridge: true, msg: { type: 'RPC_BATCH_RESPONSE', _id, result: res } }, '*'); } catch (_) {}
+      });
+    } catch (err) {
+      if (!err?.message?.includes('context')) console.warn('[ZendIQ][bridge] RPC_BATCH error', err?.message);
     }
     return;
   }

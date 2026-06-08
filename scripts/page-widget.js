@@ -328,7 +328,7 @@
       if (!risk) return '';
       const rc      = _rClr(risk.level);
       const badge   = isSimple ? _riskLabel(risk.level) : `${risk.level} \u00b7 ${risk.score}/100`;
-      const rows    = _factorRows(risk.factors, isSimple);
+      const rows    = isSimple ? '' : _factorRows(risk.factors, false);
       const divider = rows ? ';margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06)' : '';
       return `<div style="background:${rc}11;border:1px solid ${rc}44;border-radius:10px;padding:10px 12px;margin-bottom:10px;cursor:help"
         title="Execution Risk \u2014 network congestion, trade size and token characteristics.&#10;Score 0\u2013100: LOW &lt;25 | MEDIUM 25\u201349 | HIGH 50\u201374 | CRITICAL 75+">
@@ -380,6 +380,9 @@
     // ── End shared Review & Sign builders ────────────────────────────────────
     // Expose card builders to site adapters (pump, raydium, etc.)
     Object.assign(ns, { _rClr, _riskLabel, _factorRows, _buildOrderCard, _buildTokenRiskCard, _buildExecutionRiskCard, _buildSavingsCostsCard, _buildReviewShell });
+
+    // On axiom.trade there is no Swap tab — redirect if somehow set.
+    if (ns.axiomVerifyOnly && ns.widgetActiveTab === 'swap') ns.widgetActiveTab = 'monitor';
 
     const widget = document.getElementById('sr-widget');
     if (!widget) return;
@@ -2057,10 +2060,10 @@
       </div>
 
       <div style="display:flex;border-bottom:1px solid rgba(153,69,255,0.2);background:rgba(0,0,0,0.15);">
-        <button id="sr-tab-swap"     style="flex:1;padding:9px 4px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid ${ns.widgetActiveTab==='swap'?'#14F195':'transparent'};color:${ns.widgetActiveTab==='swap'?'#14F195':'#C2C2D4'};cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;justify-content:center;">
+        ${ns.axiomVerifyOnly ? '' : `<button id="sr-tab-swap"     style="flex:1;padding:9px 4px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid ${ns.widgetActiveTab==='swap'?'#14F195':'transparent'};color:${ns.widgetActiveTab==='swap'?'#14F195':'#C2C2D4'};cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;justify-content:center;">
           <svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;margin-right:6px;fill:none;stroke:currentColor;stroke-width:1.6"><path d="M7 16V8m0 0l3 3M7 8l-3 3" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 8v8m0 0l3-3m-3 3l-3-3" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Swap
-        </button>
+        </button>`}
         <button id="sr-tab-monitor"  style="flex:1;padding:9px 4px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid ${ns.widgetActiveTab==='monitor'?'#14F195':'transparent'};color:${ns.widgetActiveTab==='monitor'?'#14F195':'#C2C2D4'};cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;justify-content:center;">
           <svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;margin-right:6px;fill:none;stroke:currentColor;stroke-width:1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Monitor
@@ -2340,7 +2343,8 @@
     }
 
     // Tab switching
-    bodyInner.querySelector('#sr-tab-swap').onclick     = () => { collapseAlertIfPending(); ns.widgetActiveTab = 'swap';     renderWidgetPanel(); };
+    const _tabSwapBtn = bodyInner.querySelector('#sr-tab-swap');
+    if (_tabSwapBtn) _tabSwapBtn.onclick = () => { collapseAlertIfPending(); ns.widgetActiveTab = 'swap'; renderWidgetPanel(); };
     bodyInner.querySelector('#sr-tab-monitor').onclick  = () => {
       ns.widgetActiveTab = 'monitor';
       // Re-apply alert class if a pending decision is still waiting
@@ -2407,6 +2411,30 @@
     // Monitor tab Simple/Advanced mode toggle (checkbox)
     const monModeToggle = bodyInner.querySelector('#sr-mon-mode-toggle');
     if (monModeToggle) monModeToggle.onchange = () => { ns.widgetMode = monModeToggle.checked ? 'advanced' : 'simple'; _saveWidgetSettings(); renderWidgetPanel(); };
+
+    // Axiom verify-only: wire close / proceed / cancel buttons in Monitor tab.
+    if (ns.axiomVerifyOnly) {
+      const _axClose = bodyInner.querySelector('#sr-ax-close');
+      if (_axClose) _axClose.onclick = () => {
+        const _el = document.getElementById('sr-widget');
+        if (_el) { _el.classList.remove('expanded', 'alert'); savePillState(_el); }
+      };
+
+      // Confirm-intercept buttons (shown when user clicked Buy).
+      const _axProceed = bodyInner.querySelector('#sr-ax-proceed');
+      if (_axProceed) _axProceed.onclick = () => {
+        ns.axiomProceedTrade?.(); // re-fires the original Buy click, bypassing our capture
+        const _el = document.getElementById('sr-widget');
+        if (_el) { _el.classList.remove('expanded', 'alert'); savePillState(_el); }
+      };
+
+      const _axCancel = bodyInner.querySelector('#sr-ax-cancel');
+      if (_axCancel) _axCancel.onclick = () => {
+        ns.axiomConfirmPending = false;
+        ns.axiomPendingBtnRef  = null;
+        renderWidgetPanel(); // re-render to swap back to "Got it — close" state
+      };
+    }
 
     // Wire settings panel controls when the settings tab is visible
     if (ns.widgetActiveTab === 'settings') {

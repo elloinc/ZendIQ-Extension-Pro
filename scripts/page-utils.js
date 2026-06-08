@@ -154,6 +154,37 @@
     });
   }
 
+  // Batch multiple Solana RPC methods into a single HTTP request.
+  // Avoids publicnode rate-limiting when several rpcCall()s fire simultaneously
+  // (e.g. getAccountInfo + getTokenLargestAccounts + getTokenSupply in token-score).
+  // Returns an array of raw JSON-RPC result objects, one per call in input order.
+  // Each entry is { result: ..., error: ... } or null if the endpoint skipped it.
+  function rpcBatch(calls) {
+    return new Promise((resolve, reject) => {
+      const _id = Math.random().toString(36).slice(2);
+      const _timeout = setTimeout(() => {
+        window.removeEventListener('message', _handler);
+        reject(new Error('RPC_BATCH timeout'));
+      }, 15000);
+      function _handler(ev) {
+        if (!ev.data?.sr_bridge || ev.data.msg?.type !== 'RPC_BATCH_RESPONSE' || ev.data.msg?._id !== _id) return;
+        clearTimeout(_timeout);
+        window.removeEventListener('message', _handler);
+        const res = ev.data.msg.result;
+        if (res?.ok) resolve(res.results);
+        else reject(new Error(res?.error ?? 'Batch RPC failed'));
+      }
+      window.addEventListener('message', _handler);
+      try {
+        window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'RPC_BATCH', calls, _id } }, '*');
+      } catch (e) {
+        clearTimeout(_timeout);
+        window.removeEventListener('message', _handler);
+        reject(e);
+      }
+    });
+  }
+
   /**
    * After a swap lands on-chain, fetch the actual received token amount from
    * the Solana transaction record and compute real quote accuracy.
@@ -240,6 +271,7 @@
     b58Decode,
     extractFeePayerFromTx,
     rpcCall,
+    rpcBatch,
     fetchActualOut,
   });
 })();

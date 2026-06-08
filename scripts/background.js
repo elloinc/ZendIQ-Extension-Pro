@@ -80,9 +80,25 @@ async function _fetchAndCacheSolPrice() {
 // Fetch immediately on every SW startup (covers install, update, and SW wakeup cycles)
 _fetchAndCacheSolPrice();
 // Alarm persists across SW hibernation — wakes the SW and re-fetches every 5 min
-chrome.alarms.create('zq-sol-price', { periodInMinutes: 5 });
+chrome.alarms.create('zq-sol-price',   { periodInMinutes: 5    });
+// Keepalive: Chrome MV3 service workers sleep after ~30s of inactivity.
+// axiom.trade has low message traffic so the SW goes cold between token navigations,
+// causing all token-score fetches to time out waiting for the SW to wake up.
+// A 0.4-min (24s) alarm is the minimum Chrome allows and keeps latency under ~1s.
+chrome.alarms.create('zq-sw-keepalive', { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'zq-sol-price') _fetchAndCacheSolPrice();
+  // zq-sw-keepalive: secondary keepalive via alarms (belt-and-suspenders)
+});
+
+// ── Persistent port keepalive ─────────────────────────────────────────────────
+// Content scripts open a 'zq-keepalive' port at document_start (bridge.js).
+// Accepting it here prevents Chrome from killing the SW while any DEX tab is open.
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'zq-keepalive') return;
+  // No-op handler — just accepting the port is enough to extend SW lifetime.
+  // The port's heartbeat messages ('zq-ping') are intentionally ignored.
+  port.onDisconnect.addListener(() => void chrome.runtime.lastError);
 });
 
 // ── Extension lifecycle events ───────────────────────────────────────────────
@@ -194,7 +210,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const allowed = FETCH_JSON_ALLOWED.some(o => parsedUrl.origin === o);
     if (!allowed) { sendResponse({ ok: false, error: 'URL not in allowlist' }); return true; }
     const fetchOpts = msg.headers ? { headers: msg.headers } : {};
-    fetch(msg.url, fetchOpts)
+    // 9 s hard cap — prevents a slow/unresponsive external API from leaving the
+    // background handler pending (which would cause the caller's timeout to fire
+    // and leave the chrome.runtime channel open until the SW eventually dies).
+    fetch(msg.url, { ...fetchOpts, signal: AbortSignal.timeout(9000) })
       .then(async r => {
         if (!r.ok) {
           const status = r.status;
@@ -202,11 +221,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'HTTP ' + status, status });
           return;
         }
-        const data = await r.json();
+        // r.json() throws SyntaxError when the body is empty or truncated (HTTP 200
+        // with no body). Handle it inline so it doesn't reach the outer .catch().
+        let data;
+        try { data = await r.json(); } catch (_) { sendResponse({ ok: false, error: 'empty response' }); return; }
         sendResponse({ ok: true, data });
       })
       .catch(err => {
-        console.error('[SR bg] FETCH_JSON fetch error:', err.message);
+        // Only genuine network errors (timeout, DNS, connection reset) land here.
+        if (!err?.message?.includes('context')) console.error('[SR bg] FETCH_JSON fetch error:', err.message);
         sendResponse({ ok: false, error: err.message });
       });
     return true; // keep channel open for async response
@@ -271,6 +294,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Sequential fallback only runs when all parallel attempts fail.
     const _rpcEndpoints = [
       'https://solana.publicnode.com',
+      'https://rpc.ankr.com/solana',
+      'https://solana.drpc.org',
       'https://api.mainnet-beta.solana.com',
     ];
     const _body = JSON.stringify({ jsonrpc:'2.0', id:1, method: msg.method, params: msg.params ?? [] });
@@ -292,6 +317,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const detail = errs.length ? errs.join(' | ') : (agg?.message || 'unknown');
         sendResponse({ ok: false, error: 'All RPC endpoints failed: ' + detail });
       });
+    return true;
+  }
+
+  if (msg.type === 'RPC_BATCH') {
+    // Send multiple Solana JSON-RPC methods in a single HTTP batch request.
+    // Reduces publicnode load from N simultaneous calls to 1, preventing 429s
+    // when getAccountInfo + getTokenLargestAccounts + getTokenSupply fire together.
+    const _batchEndpoints = [
+      'https://solana.publicnode.com',
+      'https://api.mainnet-beta.solana.com',
+    ];
+    const _batchBody = JSON.stringify(
+      msg.calls.map((c, i) => ({ jsonrpc: '2.0', id: i, method: c.method, params: c.params ?? [] }))
+    );
+    const _tryBatch = async (url) => {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _batchBody,
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const arr = await r.json();
+      if (!Array.isArray(arr)) throw new Error('non-array batch response');
+      return arr;
+    };
+    (async () => {
+      for (const url of _batchEndpoints) {
+        try {
+          const arr = await _tryBatch(url);
+          // Map batch response array back to call-index order
+          const indexed = {};
+          arr.forEach(item => { indexed[item.id] = item; });
+          sendResponse({ ok: true, results: msg.calls.map((_, i) => indexed[i] ?? null) });
+          return;
+        } catch (_) {}
+      }
+      sendResponse({ ok: false, error: 'All batch RPC endpoints failed' });
+    })();
     return true;
   }
 
@@ -402,7 +466,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           chrome.storage.local.set({ sendiq_swap_history: hist }, () => {
             // After persisting, forward update to all supported DEX tabs so their widget can refresh
             const _send2 = (id, m) => chrome.tabs.sendMessage(id, m, () => { void chrome.runtime.lastError; });
-            const _dexUrls = ['*://*.jup.ag/*', '*://*.raydium.io/*', '*://raydium.io/*', '*://*.pump.fun/*', '*://pump.fun/*'];
+            const _dexUrls = ['*://*.jup.ag/*', '*://*.raydium.io/*', '*://raydium.io/*', '*://*.pump.fun/*', '*://pump.fun/*', '*://*.axiom.trade/*', '*://axiom.trade/*'];
             _dexUrls.forEach(pattern => {
               chrome.tabs.query({ url: pattern }, (tabs) => {
                 if (tabs && tabs.length) tabs.forEach(t => _send2(t.id, msg));

@@ -125,6 +125,13 @@
     // ── Axiom.trade adapter state ────────────────────────────────────────
     axiomSessionPubkey: null,     // active session wallet pubkey; updated on every wallet switch
     axiomPositions:     new Map(), // Map<walletAddress, {wallet, token, openedAt}> — open positions
+    axiomVerifyOnly:    false,     // true on axiom.trade — suppresses routing UX, shows risk-only widget
+    axiomLastSlippage:  null,      // last known user slippage as decimal (e.g. 0.20 = 20%) from log-tx-v3
+    axiomLastMevMode:   null,      // last known mevProtection boolean from log-tx-v3
+    axiomMevRisk:       null,      // calculateMEVRisk result for current token
+    axiomRiskResult:    null,      // calculateRisk result for current token (execution risk)
+    axiomConfirmPending: false,    // true while buy-button intercept awaits user decision
+    axiomPendingBtnRef:  null,     // DOM reference to the intercepted Buy button
 
     // ── Site adapter registry ────────────────────────────────────────────
     _siteAdapters: [],  // populated by page-pump.js, page-raydium.js, etc.

@@ -267,6 +267,21 @@ function _buildTooltipHtml(h) {
     }
   }
 
+  // Axiom-specific: trade costs from preset instead of ZendIQ routing costs.
+  if (h.source === 'axiom') {
+    const p = h.axiomPreset ?? {};
+    html += divider;
+    html += `<div style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0;margin-bottom:8px">Axiom Trade Costs</div>`;
+    if (p.priorityFeeSol != null) html += row('Priority fee', `${p.priorityFeeSol} SOL`, '#FFB547');
+    if (p.bribeFeeSol    != null) html += row('Bribe fee',    `${p.bribeFeeSol} SOL`,    p.bribeFeeSol > 0.001 ? '#FFB547' : 'var(--muted)');
+    html += row('MEV protection', p.mevProtection ? '\u2713 On' : '\u2717 Off', p.mevProtection ? '#14F195' : '#FFB547');
+    if (p.enhancedMevProtection) html += row('Enhanced MEV', '\u2713 On', '#14F195');
+    if (p.provider) html += row('Provider', escapeHtml(p.provider));
+    if (p.timeTakenMs != null) html += row('Settlement', `${p.timeTakenMs}ms`);
+    html += `<div style="margin-top:6px;font-size:var(--fs-xs);color:var(--muted)">ZendIQ monitors Axiom trades post-settlement. Independent sandwich detection only \u2014 ZendIQ cannot route or re-execute Axiom trades.</div>`;
+    return html;
+  }
+
   // Savings & Costs — always shown
   const _mevMult = ((h.routeSource === 'raydium' || h.routeSource === 'pump.fun') && h.jitoBundle) ? 0.95 : _isRFQFill ? 1.0 : 0.70;
   // Prefer the frozen snap value (set at Review & Sign time when jitoUsd was non-zero).
@@ -407,6 +422,7 @@ function _fmtAmt(val, sym) {
 }
 // Human-readable exchange label from swapType / routeSource field.
 function _exchangeLabel(h) {
+  if (h.source === 'axiom') return 'Axiom.trade';
   if (h.routeSource === 'pump.fun') return (h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun';
   if (h.routeSource === 'raydium') return (h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM';
   switch ((h.swapType || '').toLowerCase()) {
@@ -502,6 +518,35 @@ function _renderHistoryEntry(h, idx) {
         sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="${escapeHtml(_scanTip)}" style="cursor:help">Sandwich check</span><span class="val" style="color:var(--green);font-weight:700">Not sandwiched \u2705</span></div>`;
       }
     }
+  }
+
+  // ── Axiom.trade card ──────────────────────────────────────────────────────
+  if (h.source === 'axiom') {
+    const _rlColors = { CRITICAL: '#FF4D4D', HIGH: '#FFB547', MEDIUM: '#9945FF', LOW: '#14F195' };
+    const _rlColor  = _rlColors[h.riskLevel] ?? 'var(--muted)';
+    const _tokenLbl = escapeHtml(h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?'));
+    const _failBadge = (h.success === false)
+      ? ` <span style="color:#FF4D4D;font-weight:700">\u26a0 Failed</span>` : '';
+    const _rlBadge = h.riskLevel
+      ? ` <span style="font-size:var(--fs-xs);font-weight:700;background:${_rlColor}22;border:1px solid ${_rlColor}55;color:${_rlColor};border-radius:10px;padding:1px 6px">${escapeHtml(h.riskLevel)}</span>` : '';
+    const _preset  = h.axiomPreset ?? {};
+    const _mevStr  = _preset.mevProtection ? '\u{1F6E1} MEV On' : '\u26a1 MEV Off';
+    const _mevCol  = _preset.mevProtection ? '#14F195' : '#FFB547';
+    const _msStr   = _preset.timeTakenMs != null ? `${_preset.timeTakenMs}ms` : '';
+    return `<div class="analysis-card" id="${id}" style="margin-bottom:8px;padding:8px;cursor:default;background:rgba(153,69,255,0.04);border-color:rgba(153,69,255,0.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_rlBadge}${_failBadge}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:var(--fs-base);color:${_mevCol}">${_mevStr}</span>
+        ${_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : ''}
+      </div>
+      ${sandwichRowHtml}
+      <div class="analysis-row" style="display:flex;justify-content:space-between;align-items:center">
+        ${solscanLink ? `<div>${solscanLink}</div>` : '<div></div>'}
+        <div style="color:var(--muted);font-size:12px">${ago}</div>
+      </div>
+    </div>`;
   }
 
   // ── Failed trade card (tx sent but rejected on-chain) ─────────────────────

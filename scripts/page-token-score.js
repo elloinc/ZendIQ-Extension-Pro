@@ -12,7 +12,7 @@
  *  7.  3-month price change (GeckoTerminal)
  *  8.  Long-term price change (GeckoTerminal, up to ~6M)
  *  9.  Volume trend / activity collapse (GeckoTerminal)
- * 10.  Token age (DexScreener pairCreatedAt)
+ * 10.  Token age (DexScreener pairCreatedAt, or on-chain creation block as fallback)
  * 11.  24h price change
  * 12.  Liquidity depth (DexScreener)
  * 13.  Market cap (DexScreener)
@@ -115,8 +115,8 @@
 
   // ── Deployer analysis helpers ─────────────────────────────────────────────────
   // SPL token program IDs — used to identify InitializeMint instructions.
-  const _SPL_TOKEN    = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss624VQ5SDWKn';
-  const _SPL_TOKEN_22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+  const _SPL_TOKEN    = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';  // SPL Token program
+  const _SPL_TOKEN_22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';  // Token-2022 program
 
   // Returns the real deployer wallet — fee-payer of the mint's oldest transaction.
   // Works even after mint authority is burned. Falls back to mint authority on error.
@@ -161,13 +161,31 @@
       const recent  = (resp?.result ?? []).filter(s => (s.blockTime ?? 0) >= cutoff);
       if (!recent.length) return { tokenCount: 0, mints: [] };
 
-      const toCheck = recent.slice(0, 50);
-      const txResps = await Promise.all(
-        toCheck.map(s => ns.rpcCall('getTransaction', [
-          s.signature,
-          { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
-        ]).catch(() => null))
-      );
+      // Prefer all 200 recent txs, but cap API calls at 50.
+      // Active deployer wallets that also trade heavily have mint-creation txs
+      // scattered across their history — not necessarily in the 50 most recent.
+      // Strategy: include every tx that has a memo/log hint of a mint init (none
+      // available from signatures alone), so fall back to sampling: take the 50
+      // most recent PLUS up to 20 evenly-spaced older ones to widen coverage.
+      const _spread = recent.length > 50
+        ? recent.slice(0, 30).concat(
+            Array.from({ length: 20 }, (_, i) => recent[30 + Math.floor(i * (recent.length - 30) / 20)])
+              .filter(Boolean)
+          )
+        : recent;
+      const toCheck = _spread.slice(0, 50);
+      // Process in batches of 5 to avoid rate-limiting publicnode with 50 simultaneous RPC calls.
+      const txResps = [];
+      for (let _i = 0; _i < toCheck.length; _i += 5) {
+        const _batch = toCheck.slice(_i, _i + 5);
+        const _batchResults = await Promise.all(
+          _batch.map(s => ns.rpcCall('getTransaction', [
+            s.signature,
+            { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+          ]).catch(() => null))
+        );
+        txResps.push(..._batchResults);
+      }
 
       const mints = [];
       const seen  = new Set();
@@ -246,55 +264,161 @@
       const valid = allSigs.filter(s => s.slot && !s.err);
       if (!valid.length) return null;
 
-      // Creation slot = minimum slot number across the complete history
-      let creationSlot = valid[0].slot;
-      for (const s of valid) if (s.slot < creationSlot) creationSlot = s.slot;
-
+      // Creation slot = minimum slot number across the complete history.
+      // Track blockTime of the oldest sig so _computeScore can derive token age
+      // purely from on-chain data when DexScreener/pump.fun API haven't indexed the token yet.
+      let creationSlot      = valid[0].slot;
+      let creationBlockTime = valid[0].blockTime ?? null;
+      for (const s of valid) {
+        if (s.slot < creationSlot) {
+          creationSlot      = s.slot;
+          creationBlockTime = s.blockTime ?? null;
+        }
+      }
       const txCount = valid.filter(s => s.slot === creationSlot).length;
       return {
         bundleLevel: txCount >= 5 ? 'high' : txCount >= 3 ? 'medium' : 'low',
         creationSlotTxCount: txCount,
+        createdAtMs: creationBlockTime ? creationBlockTime * 1000 : null,
         inconclusive: false,
       };
     } catch (_) { return null; }
   }
 
   // ── On-chain: mint account info (mintAuthority, freezeAuthority) ────────────
-  async function _fetchMintInfo(mint) {
+  // SPL Token Mint layout (82 bytes):
+  //   0-3   u32 LE  mintAuthorityOption  (1 = present)
+  //   4-35  bytes   mintAuthority pubkey
+  //   36-43 u64 LE  supply
+  //   44    u8      decimals
+  //   45    u8      isInitialized
+  //   46-49 u32 LE  freezeAuthorityOption (1 = present)
+  //   50-81 bytes   freezeAuthority pubkey
+  // Token-2022 accounts share the same prefix; the extra TLV data is after byte 82.
+  function _parseMintBytes(b64) {
     try {
-      const resp = await ns.rpcCall('getAccountInfo', [mint, { encoding: 'jsonParsed' }]);
-      const info = resp?.result?.value?.data?.parsed?.info;
-      if (!info) return null;
+      const bytes = ns.base64ToUint8Array(b64);
+      if (!bytes || bytes.length < 82) return null;
+      const view = new DataView(bytes.buffer, bytes.byteOffset);
+      const mintAuthOpt   = view.getUint32(0,  true);
+      const freezeAuthOpt = view.getUint32(46, true);
       return {
+        mintAuthority:   mintAuthOpt   === 1 ? ns.b58Encode(bytes.slice(4,  36)) : null,
+        freezeAuthority: freezeAuthOpt === 1 ? ns.b58Encode(bytes.slice(50, 82)) : null,
+        supply:          view.getBigUint64(36, true).toString(),
+        decimals:        bytes[44],
+      };
+    } catch (_) { return null; }
+  }
+
+  // ── On-chain: mint info + holder distribution ────────────────────────────────
+  // Three calls run SEQUENTIALLY (not in parallel) so publicnode only gets one
+  // request at a time — parallel calls triggered 429 rate-limits on the 2nd/3rd hit.
+  async function _fetchTokenOnChain(mint) {
+    // Fire both calls in parallel — getTokenLargestAccounts only needs the mint
+    // address, so there is no dependency on getAccountInfo's result at call time.
+    // This halves the sequential RPC latency that was causing the 8s timeout.
+    // getTokenLargestAccounts silently fails for Token-2022 (expected).
+    const [accountR, largestR] = await Promise.all([
+      ns.rpcCall('getAccountInfo', [mint, { encoding: 'jsonParsed' }])
+        .catch(() => null),
+      ns.rpcCall('getTokenLargestAccounts', [mint])
+        .catch(() => null),
+    ]);
+
+    // ── Parse mintInfo ─────────────────────────────────────────────────────────
+    let mintInfo = null;
+    const info = accountR?.result?.value?.data?.parsed?.info;
+    if (info) {
+      mintInfo = {
         mintAuthority:   info.mintAuthority   ?? null,
         freezeAuthority: info.freezeAuthority ?? null,
         supply:          info.supply          ?? null,
         decimals:        info.decimals        ?? 9,
       };
-    } catch (_) { return null; }
-  }
+    } else if (accountR?.result?.value) {
+      // Fallback: some endpoints return base64 even when jsonParsed is requested.
+      const rawData = accountR.result.value.data;
+      const b64 = Array.isArray(rawData) ? rawData[0] : null;
+      if (b64) mintInfo = _parseMintBytes(b64);
+    }
 
-  // ── On-chain: top holder distribution ────────────────────────────────────────
-  async function _fetchHolderData(mint) {
-    try {
-      const [largestResp, supplyResp] = await Promise.all([
-        ns.rpcCall('getTokenLargestAccounts', [mint]).catch(() => null),
-        ns.rpcCall('getTokenSupply',          [mint]).catch(() => null),
-      ]);
-      const holders      = largestResp?.result?.value ?? [];
-      const totalSupply  = parseFloat(supplyResp?.result?.value?.uiAmount ?? 0);
-      if (!totalSupply || !holders.length) return null;
+    // Derive total supply from mintInfo — avoids a separate getTokenSupply call and
+    // works for Token-2022 mints where getTokenSupply returns "not a Token mint".
+    const _rawSupply = mintInfo?.supply != null ? parseFloat(mintInfo.supply) : 0;
+    const _decimals  = mintInfo?.decimals ?? 9;
+    let totalSupply  = _rawSupply > 0 ? _rawSupply / Math.pow(10, _decimals) : 0;
 
+    // If mintInfo fetch failed entirely, fall back to getTokenSupply (rare).
+    // Skip when accountR explicitly returned value:null — the account doesn't exist
+    // on-chain and getTokenSupply would also fail with "could not find account".
+    const _accountNotFound = accountR !== null && accountR?.result?.value === null;
+    if (!mintInfo && !_accountNotFound) {
+      const supplyR = await ns.rpcCall('getTokenSupply', [mint])
+        .catch(() => null);
+      totalSupply = parseFloat(supplyR?.result?.value?.uiAmount ?? 0);
+    }
+
+    // ── Parse holderData ───────────────────────────────────────────────────────
+    // largestR may be null for Token-2022; that produces holderData with 0 holders (LOW).
+    let holderData = null;
+    if (totalSupply) {
+      const holders = largestR?.result?.value ?? [];
       const holderPcts = holders.map(h => ({
         address: h.address,
-        pct:     totalSupply > 0 ? (parseFloat(h.uiAmount ?? 0) / totalSupply) * 100 : 0,
+        pct:     (parseFloat(h.uiAmount ?? 0) / totalSupply) * 100,
       }));
-      const top1Pct = holderPcts[0]?.pct ?? 0;
-      const top5Pct = holderPcts.slice(0, 5).reduce((s, h) => s + h.pct, 0);
+      holderData = {
+        holderPcts,
+        top1Pct:      holderPcts[0]?.pct ?? 0,
+        top5Pct:      holderPcts.slice(0, 5).reduce((s, h) => s + h.pct, 0),
+        totalHolders: holders.length,
+      };
+    }
 
-      return { holderPcts, top1Pct, top5Pct, totalHolders: holders.length };
-    } catch (_) { return null; }
+    return { mintInfo, holderData };
   }
+
+  // ── pump.fun coin API: immediate data for brand-new meme tokens ────────────
+  // DexScreener / RugCheck can take 1–5 min to index a newly launched token.
+  // The pump.fun coins API has data from the very first block — use as fallback
+  // dex source so new axiom.trade / pump.fun tokens still get marketCap + age signals.
+  async function _fetchPumpFunCoin(mint) {
+    const _urls = [
+      `https://frontend-api-v3.pump.fun/coins/${mint}`,
+      `https://frontend-api-v2.pump.fun/coins/${mint}`,
+      `https://frontend-api.pump.fun/coins/${mint}`,
+    ];
+    for (const url of _urls) {
+      try {
+        const data = await ns.pageJsonFetch(url);
+        if (!data?.mint) continue;
+        // Derive SOL price from price_in_usd / price_in_sol so we can convert
+        // real_sol_reserves to a USD liquidity estimate without a hardcoded price.
+        const _pInSol = parseFloat(data.price_in_sol ?? 0);
+        const _pInUsd = parseFloat(data.price_in_usd ?? 0);
+        const _solPx  = (_pInSol > 0 && _pInUsd > 0) ? _pInUsd / _pInSol : null;
+        // real_sol_reserves = actual SOL raised from buyers (lamports).
+        // Multiply by 2 for both sides of the virtual pool; capped to avoid overflow.
+        const _realSol  = parseFloat(data.real_sol_reserves ?? 0) / 1e9;
+        const _liqUsd   = (_solPx && _realSol > 0) ? Math.round(_realSol * _solPx * 2) : null;
+        // Normalise to dexData shape so _computeScore works unchanged.
+        return {
+          symbol:        data.symbol          ?? null,
+          name:          data.name            ?? null,
+          priceChange24h: null,               // no OHLC in /coins/ endpoint
+          volume24h:     null,
+          liquidityUsd:  _liqUsd,             // derived from bonding-curve reserves
+          marketCap:     data.usd_market_cap  ?? null,
+          pairCreatedAt: data.created_timestamp ?? null,  // already ms
+          dexId:         'pump.fun',
+          pairUrl:       `https://pump.fun/coin/${mint}`,
+        };
+      } catch (_) {}
+    }
+    return null;
+  }
+
   // ── DexScreener: price action, liquidity, market cap, token age ────────────
   async function _fetchDexScreener(mint) {
     try {
@@ -524,19 +648,23 @@
     // Good on-chain hygiene (burned auth, decent distribution) does NOT mean the
     // token is safe to hold — memecoins can still collapse from sentiment alone.
     {
-      const _isPumpFunSite = window.location.hostname?.includes('pump.fun');
+      // Meme-launch context: pump.fun native, axiom.trade (all meme launches),
+      // or any mint address ending in 'pump' (pump.fun vanity address pattern).
+      const _isMemeContext = window.location.hostname?.includes('pump.fun')
+        || window.location.hostname?.includes('axiom.trade')
+        || mint.endsWith('pump');
       const tName = (rugCheck?.tokenMeta?.name   ?? '').toLowerCase();
       const tSym  = (rugCheck?.tokenMeta?.symbol ?? '').toLowerCase();
       const isMeme = KNOWN_MEMECOINS.has(mint) ||
         MEMECOIN_KW.some(k => tName.includes(k) || tSym.includes(k));
-      if (_isPumpFunSite) {
-        // Every token on pump.fun is a speculative meme launch — site context
+      if (_isMemeContext) {
+        // Every token on these platforms is a speculative meme launch — site context
         // is a stronger signal than keyword detection.
         score += 35;
         factors.push({
-          name: 'Pump.fun launch \u2014 extreme speculative risk',
+          name: 'Meme launch \u2014 extreme speculative risk',
           severity: 'CRITICAL',
-          detail: 'All tokens traded on pump.fun are speculative meme launches with no fundamental value floor. High probability of total loss.',
+          detail: 'Token launched on a meme/bonding-curve platform. All such tokens are speculative launches with no fundamental value floor. High probability of total loss.',
         });
       } else if (isMeme) {
         score += 25;
@@ -654,12 +782,19 @@
     }
 
     // ── 10. Token age ──────────────────────────────────────────────────────────
-    // Source: DexScreener pairCreatedAt (when the first trading pair was created).
+    // Primary source: DexScreener/pump.fun pairCreatedAt (Unix ms).
+    // Fallback: creation-slot blockTime from bundle detection — on-chain and
+    // always available even when external APIs haven't indexed the token yet.
     // Suppressed on pump.fun — every token there is <24h old by design;
     // the site-context CRITICAL factor (§5) already captures that risk fully.
-    const _isPumpFunSite = window.location.hostname?.includes('pump.fun');
-    if (dexData?.pairCreatedAt && !_isPumpFunSite) {
-      const ageMs   = Date.now() - dexData.pairCreatedAt;
+    // Not suppressed for axiom.trade — graduated tokens there can be weeks/months old.
+    const _isPumpFunSite  = window.location.hostname?.includes('pump.fun');
+    const _isMemeContext2 = _isPumpFunSite
+      || window.location.hostname?.includes('axiom.trade')
+      || mint.endsWith('pump');
+    const _createdAt = dexData?.pairCreatedAt ?? bundleLaunchData?.createdAtMs ?? null;
+    if (_createdAt && !_isPumpFunSite) {
+      const ageMs   = Date.now() - _createdAt;
       const ageDays = ageMs / (1000 * 60 * 60 * 24);
       if (ageDays < 1) {
         score += 25;
@@ -675,19 +810,19 @@
       }
     }
 
-    // ── 10. 24h price change ──────────────────────────────────────────────────
+    // ── 11. 24h price change ──────────────────────────────────────────────────
     // On pump.fun a large GAIN means the pump phase is active and a dump is
     // likely imminent — the inverse of the normal exit-rug signal.
     if (dexData?.priceChange24h != null) {
       const chg = parseFloat(dexData.priceChange24h);
       if (isFinite(chg)) {
-        if (_isPumpFunSite && chg >= 200) {
+        if (_isMemeContext2 && chg >= 200) {
           score += 12;
           factors.push({ name: `Active pump: +${chg.toFixed(0)}% in 24h`, severity: 'CRITICAL', detail: `+${chg.toFixed(1)}% since launch \u2014 token is in the pump phase. Dump typically follows immediately after this level of gain.` });
-        } else if (_isPumpFunSite && chg >= 80) {
+        } else if (_isMemeContext2 && chg >= 80) {
           score += 8;
           factors.push({ name: `Pump in progress: +${chg.toFixed(0)}% in 24h`, severity: 'HIGH', detail: `+${chg.toFixed(1)}% since launch \u2014 significant pump detected. High probability of sharp reversal.` });
-        } else if (_isPumpFunSite && chg >= 30) {
+        } else if (_isMemeContext2 && chg >= 30) {
           score += 4;
           factors.push({ name: `Rising fast: +${chg.toFixed(0)}% in 24h`, severity: 'MEDIUM', detail: `+${chg.toFixed(1)}% since launch \u2014 elevated momentum. Watch for a sudden reversal.` });
         } else if (chg <= -50) {
@@ -701,12 +836,12 @@
           factors.push({ name: `Price \u2212${Math.abs(chg).toFixed(0)}% in 24h`, severity: 'MEDIUM', detail: `Notable 24h price decline of ${Math.abs(chg).toFixed(1)}%.` });
         } else {
           const sign = chg >= 0 ? '+' : '';
-          factors.push({ name: `24h price: ${sign}${chg.toFixed(1)}%`, severity: 'LOW', detail: _isPumpFunSite ? `Modest movement since launch \u2014 not yet in active pump territory.` : `No significant downward movement detected.` });
+          factors.push({ name: `24h price: ${sign}${chg.toFixed(1)}%`, severity: 'LOW', detail: _isMemeContext2 ? `Modest movement since launch \u2014 not yet in active pump territory.` : `No significant downward movement detected.` });
         }
       }
     }
 
-    // ── 11. Liquidity depth ────────────────────────────────────────────────────
+    // ── 12. Liquidity depth ────────────────────────────────────────────────────
     // Source: DexScreener liquidity.usd (USD value in the trading pool).
     // Formula: thin liquidity means a single sell can crash the price, and it
     // is trivially easy for the deployer to drain a small pool.
@@ -727,7 +862,7 @@
       }
     }
 
-    // ── 12. Market cap ────────────────────────────────────────────────────────
+    // ── 13. Market cap ────────────────────────────────────────────────────────
     // Source: DexScreener marketCap (circulating) or fdv (fully diluted).
     // Formula: very low market cap tokens are trivially cheap to manipulate —
     // a $10k buy can move the price 10% on a $100k mcap token.
@@ -748,7 +883,7 @@
       }
     }
 
-    // ── 13. Serial deployer ───────────────────────────────────────────────────
+    // ── 14. Serial deployer ───────────────────────────────────────────────────
     // deployerData: { address: string, tokenCount: number } | null
     // Tiers calibrated against real pump.fun bot behaviour:
     //   ≥50 = scripted factory (token every ~14h)
@@ -780,7 +915,7 @@
       }
     }
 
-    // ── 14. Deployer rug rate ─────────────────────────────────────────────────
+    // ── 15. Deployer rug rate ─────────────────────────────────────────────────
     // rugRateData: { checked: number, ruggedCount: number } | null
     // Only scored when we've sampled at least 3 of the deployer's previous tokens.
     if (rugRateData?.checked >= 3) {
@@ -807,6 +942,8 @@
     if (bundleLaunchData != null && !bundleLaunchData.inconclusive) {
       const { bundleLevel, creationSlotTxCount } = bundleLaunchData;
       const count = creationSlotTxCount ?? 0;
+      // Current detection counts transactions in the creation slot (not distinct wallets).
+      const unit  = 'txs';
       if (bundleLevel === 'high') {
         score += 40;
         factors.push({
@@ -929,23 +1066,44 @@
     }
 
     try {
-      // Helper: cap any fetch at ms ms; returns null on timeout (same as a network error).
-      const _t = (p, ms = 4000) => Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
+      // Helper: cap any fetch at ms ms; logs ERR on rejection, TIMEOUT only when the
+      // deadline actually wins the race (suppresses orphaned timer noise when a
+      // fast-failing promise resolves well before the cap).
+      const _t = (label, p, ms = 8000) => {
+        let _done = false;
+        const trackedP = p
+          .catch(() => null)
+          .then(v  => { _done = true; return v; });
+        return Promise.race([
+          trackedP,
+          new Promise(r => setTimeout(() => r(null), ms)),
+        ]);
+      };
 
-      // On pump.fun, GeckoTerminal is always empty (tokens < 30 days old, all guards fail)
-      // and each request goes through the background bridge (up to 15s timeout each).
-      // Skip it entirely to keep Phase 1 under 1s on pump.fun.
-      const _isPump = window.location.hostname?.includes('pump.fun');
+      // On pump.fun / axiom.trade, GeckoTerminal is always empty (new tokens, no OHLCV)
+      // and would add 2 extra bridge round-trips for nothing. Skip for both.
+      const _isPump  = window.location.hostname?.includes('pump.fun');
+      const _isAxiom = window.location.hostname?.includes('axiom.trade');
+      // For meme launch contexts, also try the pump.fun coin API as a fallback
+      // dex source. DexScreener / RugCheck can take 1–5 min to index a new token;
+      // pump.fun's own API has data from the very first block.
+      const _isMeme = _isPump || _isAxiom || mint.endsWith('pump');
 
-      // Phase 1: parallel fetch — on-chain + RugCheck + DexScreener + (optionally) GeckoTerminal.
-      // Bundle detection excluded — requires 1-2 slow RPC pages, deferred to Phase 2.
-      const [mintInfo, holderData, rugCheck, dexData, geckoData] = await Promise.all([
-        _t(_fetchMintInfo(mint)),
-        _t(_fetchHolderData(mint)),
-        _t(_fetchRugCheck(mint)),
-        _t(_fetchDexScreener(mint)),
-        _isPump ? Promise.resolve(null) : _t(_fetchGeckoTerminal(mint)),
+      // Phase 1: parallel fetch — on-chain (batched) + RugCheck + DexScreener + (optionally) GeckoTerminal
+      // + pump.fun coin fallback. Bundle detection excluded — deferred to Phase 2.
+      const [_onchain, rugCheck, dexRaw, geckoData, pumpCoin] = await Promise.all([
+        _t('onchain',  _fetchTokenOnChain(mint), 10000),  // parallel getAccountInfo+getLargestAccounts
+        _t('rugcheck', _fetchRugCheck(mint)),
+        _t('dex',      _fetchDexScreener(mint)),
+        // GeckoTerminal: 2 sequential HTTP calls — skip for meme contexts (always empty)
+        (_isPump || _isAxiom) ? Promise.resolve(null) : _t('gecko', _fetchGeckoTerminal(mint), 12000),
+        // pump.fun coin API: immediate data for brand-new tokens before DexScreener indexes
+        _isMeme ? _t('pump', _fetchPumpFunCoin(mint)) : Promise.resolve(null),
       ]);
+      const mintInfo   = _onchain?.mintInfo   ?? null;
+      const holderData = _onchain?.holderData ?? null;
+      // Use real DexScreener data if available, fall back to pump.fun coin API
+      const dexData = dexRaw ?? pumpCoin;
 
       // Phase 1: publish result immediately — bundle + deployer still pending.
       const _partial = _computeScore(mintInfo, holderData, rugCheck, dexData, geckoData, mint, null, null, null);
@@ -991,7 +1149,13 @@
                 let creationSlot = valid[0].slot;
                 for (const s of valid) if (s.slot < creationSlot) creationSlot = s.slot;
                 const txCount = valid.filter(s => s.slot === creationSlot).length;
-                bundleFinal = { bundleLevel: txCount >= 5 ? 'high' : txCount >= 3 ? 'medium' : 'low', creationSlotTxCount: txCount, inconclusive: false };
+                const _csig   = valid.find(s => s.slot === creationSlot);
+                bundleFinal = {
+                  bundleLevel: txCount >= 5 ? 'high' : txCount >= 3 ? 'medium' : 'low',
+                  creationSlotTxCount: txCount,
+                  createdAtMs: _csig?.blockTime ? _csig.blockTime * 1000 : null,
+                  inconclusive: false,
+                };
               }
             }
             // page2 also full (≥2000 total) → stay inconclusive

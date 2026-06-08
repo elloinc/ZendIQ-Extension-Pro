@@ -326,9 +326,12 @@
 
     // ── Minimum trade size floor ──────────────────────────────────────────────
     // Sandwich bots require a minimum profit threshold; small trades are rarely targeted.
+    // Only apply when trade size is known — null means unknown pre-trade (e.g. Axiom).
     let sizeCap = null;
-    if      (amountUSD < 10) sizeCap = 5;
-    else if (amountUSD < 50) sizeCap = 15;
+    if (amountUSD != null) {
+      if      (amountUSD < 10) sizeCap = 5;
+      else if (amountUSD < 50) sizeCap = 15;
+    }
     if (sizeCap !== null && score > sizeCap) {
       score = sizeCap;
       factors.push({ factor: 'Trade size floor', impact: 'Trade too small for profitable sandwich attack', score: 0 });

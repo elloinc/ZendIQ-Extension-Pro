@@ -132,6 +132,7 @@
     axiomRiskResult:    null,      // calculateRisk result for current token (execution risk)
     axiomConfirmPending: false,    // true while buy-button intercept awaits user decision
     axiomPendingBtnRef:  null,     // DOM reference to the intercepted Buy button
+    axiomRiskAcknowledged: false,  // true after user clicks "Got it"; cleared on token change or new buy
 
     // ── Site adapter registry ────────────────────────────────────────────
     _siteAdapters: [],  // populated by page-pump.js, page-raydium.js, etc.

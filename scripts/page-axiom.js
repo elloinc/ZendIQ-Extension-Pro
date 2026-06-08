@@ -46,16 +46,26 @@
     // Called by page-widget.js Proceed button — re-clicks the Buy button with
     // our capture listener bypassed so React's handlers fire normally.
     ns.axiomProceedTrade = function () {
-      const btn = ns.axiomPendingBtnRef;
       ns.axiomConfirmPending = false;
       ns.axiomPendingBtnRef  = null;
       // Immediately re-render Monitor so confirm panel disappears before the
       // trade fires — prevents the panel staying up through settlement.
       try { ns.renderWidgetPanel?.(); } catch (_) {}
-      if (btn) {
-        _axiomBypassNext = true;
-        btn.click();
-      }
+      // Re-find the buy button fresh — the cached ref may be stale if React
+      // re-rendered after the widget opened.
+      const btn = Array.from(document.querySelectorAll('button')).find(function (b) {
+        return (b.textContent ?? '').trim().toLowerCase().startsWith('buy ');
+      });
+      if (!btn) return;
+      // Fire the full pointer → mouse → click chain so Axiom's handler fires
+      // regardless of whether they use onPointerDown, onMouseDown, or onClick.
+      // _axiomBypassNext lets all three events pass through our capture listeners.
+      _axiomBypassNext = true;
+      btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true, isPrimary: true }));
+      btn.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true, cancelable: true, composed: true, isPrimary: true }));
+      btn.dispatchEvent(new MouseEvent('mousedown',     { bubbles: true, cancelable: true, composed: true }));
+      btn.dispatchEvent(new MouseEvent('mouseup',       { bubbles: true, cancelable: true, composed: true }));
+      btn.click();
     };
   }
 
@@ -243,6 +253,7 @@
       if (ev.tokenAddress !== ns._tokenScoreMint) {
         ns._tokenScoreMint  = ev.tokenAddress;
         ns.tokenScoreResult = null;
+        ns.axiomRiskAcknowledged = false; // new token — reset acknowledgement
         ns.fetchTokenScore(ev.tokenAddress, null);
       }
     }
@@ -335,16 +346,36 @@
               const _rwp = _wp ?? (keys.length > 0
                 ? (typeof keys[0] === 'string' ? keys[0] : (keys[0]?.pubkey ?? null)) : null);
 
-              // amountOut: meme token balance increase for the wallet
+              // amountOut: meme token balance increase for the wallet.
+              // Tier 1: mint + owner exact match.
+              // Tier 2: mint-only match (owner field absent on some token layouts).
+              // Tier 3: scan all postTokenBalances for biggest positive increase (catch-all).
               let amountOut = null;
-              if (_token && _rwp) {
-                const post = meta.postTokenBalances ?? [];
-                const pre  = meta.preTokenBalances  ?? [];
-                const pe = post.find(function (e) { return e.mint === _token && e.owner === _rwp; });
-                const pr = pre.find(function  (e) { return e.mint === _token && e.owner === _rwp; });
+              const post = meta.postTokenBalances ?? [];
+              const pre  = meta.preTokenBalances  ?? [];
+              if (_token) {
+                let pe = post.find(function (e) { return e.mint === _token && e.owner === _rwp; });
+                let pr = pre.find(function  (e) { return e.mint === _token && e.owner === _rwp; });
+                if (!pe) {
+                  pe = post.find(function (e) { return e.mint === _token; });
+                  pr = pre.find(function  (e) { return e.mint === _token; });
+                }
                 if (pe) {
-                  const diff = (pe.uiTokenAmount?.uiAmount ?? 0) - (pr?.uiTokenAmount?.uiAmount ?? 0);
+                  const rawPe = pe.uiTokenAmount?.uiAmount ?? (parseFloat(pe.uiTokenAmount?.amount ?? '0') / Math.pow(10, pe.uiTokenAmount?.decimals ?? 0));
+                  const rawPr = pr ? (pr.uiTokenAmount?.uiAmount ?? (parseFloat(pr.uiTokenAmount?.amount ?? '0') / Math.pow(10, pr.uiTokenAmount?.decimals ?? 0))) : 0;
+                  const diff = rawPe - rawPr;
                   if (diff > 0) amountOut = diff;
+                }
+              }
+              if (amountOut == null) {
+                // Tier 3: pick the token account with the biggest positive balance increase.
+                let best = 0;
+                for (const pe of post) {
+                  const pr = pre.find(function (e) { return e.mint === pe.mint && e.accountIndex === pe.accountIndex; });
+                  const rawPe = pe.uiTokenAmount?.uiAmount ?? (parseFloat(pe.uiTokenAmount?.amount ?? '0') / Math.pow(10, pe.uiTokenAmount?.decimals ?? 0));
+                  const rawPr = pr ? (pr.uiTokenAmount?.uiAmount ?? (parseFloat(pr.uiTokenAmount?.amount ?? '0') / Math.pow(10, pr.uiTokenAmount?.decimals ?? 0))) : 0;
+                  const diff = rawPe - rawPr;
+                  if (diff > best) { best = diff; amountOut = diff; }
                 }
               }
 
@@ -610,13 +641,14 @@
                 ?? e.target?.closest?.('button');
       if (!btn) return null;
       const txt = (btn.textContent ?? '').trim().toLowerCase();
-      return (txt.startsWith('buy ') || txt === 'buy') ? btn : null;
+      return txt.startsWith('buy ') ? btn : null;
     }
 
     function _showPanel(btn) {
       if (ns) {
         ns.axiomConfirmPending = true;
         ns.axiomPendingBtnRef  = btn;
+        ns.axiomRiskAcknowledged = false; // new buy intercept — reset acknowledgement
       }
       const _w = document.getElementById('sr-widget');
       if (_w) {
@@ -635,7 +667,7 @@
     // that would follow a physical press, blocking Axiom regardless of which
     // event their React component listens to (onClick, onMouseDown, onPointerDown).
     document.addEventListener('pointerdown', function (e) {
-      if (_axiomBypassNext) return; // proceed-path uses btn.click(), not pointerdown
+      if (_axiomBypassNext) return; // proceed-path: flag cleared by click handler; all events pass through
       const btn = _buyBtn(e);
       if (!btn) return;
       e.preventDefault();
@@ -883,7 +915,7 @@
       const _warnLvl = _hasAnyRisk && (_comp >= 40 || _botSc >= 40)
         ? (_comp >= 70 || _botSc >= 70 ? 'CRITICAL' : 'HIGH')
         : null;
-      const _impactHtml = _warnLvl
+      const _impactHtml = (_warnLvl && !ns.axiomRiskAcknowledged)
         ? '<div style="background:' + _c(_warnLvl) + '11;border:1px solid ' + _c(_warnLvl) + '33;border-radius:8px;padding:9px 12px;margin-bottom:10px">'
           + '<div style="color:' + _c(_warnLvl) + ';font-size:13px;font-weight:700;margin-bottom:3px">\u26a0 '
           + (_warnLvl === 'CRITICAL' ? 'Critical' : 'High') + ' sandwich risk on this token</div>'
@@ -900,10 +932,14 @@
         ? '<div style="font-size:12px;color:#C2C2D4;margin-bottom:8px;text-align:center">' + _amtLabel + '</div>'
           + '<button id="sr-ax-proceed" style="width:100%;padding:10px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;margin-bottom:7px">\u2713 Proceed with trade</button>'
           + '<button id="sr-ax-cancel" style="width:100%;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:none;color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif">\u2715 Cancel trade</button>'
-        : '<button id="sr-ax-close" style="width:100%;padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.04);color:#C2C2D4;font-size:13px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;transition:background 0.15s">\u2713 Got it \u2014 close</button>';
+        : ns.axiomRiskAcknowledged
+          ? ''
+          : '<button id="sr-ax-close" style="width:100%;padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.04);color:#C2C2D4;font-size:13px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;transition:background 0.15s">\u2713 Got it \u2014 close</button>';
       const _disclaimer = ns.axiomConfirmPending
         ? '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 10px;padding:0 2px">ZendIQ cannot re-route Axiom trades. Cancel and retry with lower slippage to reduce risk.</div>'
-        : '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 12px;padding:0 2px">ZendIQ intercepts each buy to show this risk check.</div>';
+        : ns.axiomRiskAcknowledged
+          ? ''
+          : '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 12px;padding:0 2px">ZendIQ intercepts each buy to show this risk check.</div>';
 
       return '<div style="padding:14px 16px">'
         + (_token ? '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.7px;color:#6B6B8A;margin-bottom:10px">TOKEN RISK \u00b7 ' + _sym + '</div>' : '')

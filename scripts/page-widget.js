@@ -2454,6 +2454,7 @@
     if (ns.axiomVerifyOnly) {
       const _axClose = bodyInner.querySelector('#sr-ax-close');
       if (_axClose) _axClose.onclick = () => {
+        if (ns) ns.axiomRiskAcknowledged = true;
         const _el = document.getElementById('sr-widget');
         if (_el) { _el.classList.remove('expanded', 'alert'); savePillState(_el); }
       };
@@ -2547,70 +2548,6 @@
                         sandwichResult: result,
                       }}}, '*');
                     } catch (_) {}
-                  })();
-                });
-              }
-              // TEMP: Retroactively enrich old Axiom entries that are missing amountIn/Out.
-              // Fires once per signature on first widget load after this build is installed.
-              // Safe to remove once all local test entries have been enriched.
-              if (ns.rpcCall) {
-                ns._axiomRpcPending = ns._axiomRpcPending || new Set();
-                ns.recentSwaps.forEach(p => {
-                  if (p.source !== 'axiom') return;
-                  if (p.amountIn != null && p.amountOut != null) return; // already complete
-                  if (!p.signature) return;
-                  if (ns._axiomRpcPending.has(p.signature)) return;
-                  ns._axiomRpcPending.add(p.signature);
-                  const _sig = p.signature;
-                  const _token = p.outputMint ?? null;
-                  const _wp    = ns.axiomSessionPubkey ?? ns.resolveWalletPubkey?.() ?? null;
-                  (async () => {
-                    try {
-                      for (let attempt = 0; attempt < 6; attempt++) {
-                        if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
-                        try {
-                          const res = await ns.rpcCall('getTransaction', [
-                            _sig,
-                            { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
-                          ]);
-                          const tx = res?.result;
-                          if (!tx?.meta) continue;
-                          const meta = tx.meta;
-                          if (meta.err != null) return;
-                          const msg  = tx.transaction?.message ?? {};
-                          const keys = msg.staticAccountKeys ?? msg.accountKeys ?? [];
-                          const rwp = _wp ?? (keys.length > 0
-                            ? (typeof keys[0] === 'string' ? keys[0] : (keys[0]?.pubkey ?? null)) : null);
-                          let amountOut = null;
-                          if (_token && rwp) {
-                            const post = meta.postTokenBalances ?? [];
-                            const pre  = meta.preTokenBalances  ?? [];
-                            const pe = post.find(e => e.mint === _token && e.owner === rwp);
-                            const pr = pre.find(e  => e.mint === _token && e.owner === rwp);
-                            if (pe) {
-                              const diff = (pe.uiTokenAmount?.uiAmount ?? 0) - (pr?.uiTokenAmount?.uiAmount ?? 0);
-                              if (diff > 0) amountOut = diff;
-                            }
-                          }
-                          let amountIn = p.amountIn ?? null;
-                          if (amountIn == null && rwp) {
-                            const idx = keys.findIndex(k => (typeof k === 'string' ? k : k?.pubkey) === rwp);
-                            if (idx >= 0) {
-                              const lam = (meta.preBalances[idx] ?? 0) - (meta.postBalances[idx] ?? 0) - (meta.fee ?? 0);
-                              if (lam > 0) amountIn = lam / 1e9;
-                            }
-                          }
-                          if (amountOut != null || amountIn != null) {
-                            window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: {
-                              signature: _sig,
-                              amountIn:  amountIn  ?? null,
-                              amountOut: amountOut ?? null,
-                            }}}, '*');
-                          }
-                          return;
-                        } catch (_) { /* retry */ }
-                      }
-                    } finally { ns._axiomRpcPending.delete(_sig); }
                   })();
                 });
               }

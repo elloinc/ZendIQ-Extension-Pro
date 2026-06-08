@@ -49,6 +49,9 @@
       const btn = ns.axiomPendingBtnRef;
       ns.axiomConfirmPending = false;
       ns.axiomPendingBtnRef  = null;
+      // Immediately re-render Monitor so confirm panel disappears before the
+      // trade fires — prevents the panel staying up through settlement.
+      try { ns.renderWidgetPanel?.(); } catch (_) {}
       if (btn) {
         _axiomBypassNext = true;
         btn.click();
@@ -220,8 +223,10 @@
 
     // Step 3c: per-wallet open-position map — enables token resolution on close signals.
     if (ev.type === 'meme-open-single-position-v2' && ev.walletAddress && ev.tokenAddress && ns) {
+      ns.axiomLastOpIsClose = false;
       ns.axiomPositions.set(ev.walletAddress, { wallet: ev.walletAddress, token: ev.tokenAddress, openedAt: Date.now() });
     } else if (ev.type === 'handle-position-close-v2' && ev.walletAddress && ns) {
+      ns.axiomLastOpIsClose = true;  // suppress the log-tx-v3 that follows (sell trade)
       const open = ns.axiomPositions.get(ev.walletAddress);
       if (open) {
         // Prefer map-resolved token; close signal body may omit tokenAddress.
@@ -247,6 +252,10 @@
     // navigation before the user buys). Risk score from ns.tokenScoreResult (pre-fetched
     // the moment the user navigates to the token page).
     if (ev.type === 'log-tx-v3' && ev.signature && ns) {
+      // Skip sell trades — log-tx-v3 fires for both buys and sells. When a
+      // handle-position-close-v2 signal precedes it, it's a sell; we don't intercept
+      // or add value to those, so skip recording to Activity.
+      if (ns.axiomLastOpIsClose) { ns.axiomLastOpIsClose = false; return; }
       // Cache slippage (decimal) and MEV mode for use in pre-trade risk computations.
       if (ev.slippage != null) ns.axiomLastSlippage = ev.slippage / 100;
       if (ev.mevProtection != null) ns.axiomLastMevMode = ev.mevProtection;
@@ -265,8 +274,8 @@
         outputMint:  _token,
         tokenIn:     'SOL',
         inputMint:   _SOL,
-        amountIn:    null,
-        amountOut:   null,
+        amountIn:    _axiomBuyAmountSol ?? null,  // pre-trade SOL amount; enriched by RPC fetch below
+        amountOut:   null,   // filled async below via getTransaction
         // Risk (token risk score — no swap MEV risk data on Axiom).
         riskScore:   _risk?.score   ?? null,
         riskLevel:   _risk?.level   ?? null,
@@ -303,6 +312,70 @@
           } catch (_) {}
         }).catch(function () {});
       }
+
+      // Async: fetch actual SOL spent + tokens received from the confirmed transaction.
+      // Posts a second HISTORY_UPDATE to enrich the Activity card once on-chain data arrives.
+      if (ns.rpcCall) {
+        const _sig = ev.signature;
+        const _wp  = ns.axiomSessionPubkey;
+        (async function () {
+          for (let attempt = 0; attempt < 8; attempt++) {
+            await new Promise(function (r) { setTimeout(r, attempt === 0 ? 4000 : 3000); });
+            try {
+              const res = await ns.rpcCall('getTransaction', [
+                _sig,
+                { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+              ]);
+              const tx = res?.result;
+              if (!tx?.meta) continue;
+              const meta = tx.meta;
+              if (meta.err != null) return; // failed tx — amountIn/Out irrelevant
+              const msg  = tx.transaction?.message ?? {};
+              const keys = msg.staticAccountKeys ?? msg.accountKeys ?? [];
+              const _rwp = _wp ?? (keys.length > 0
+                ? (typeof keys[0] === 'string' ? keys[0] : (keys[0]?.pubkey ?? null)) : null);
+
+              // amountOut: meme token balance increase for the wallet
+              let amountOut = null;
+              if (_token && _rwp) {
+                const post = meta.postTokenBalances ?? [];
+                const pre  = meta.preTokenBalances  ?? [];
+                const pe = post.find(function (e) { return e.mint === _token && e.owner === _rwp; });
+                const pr = pre.find(function  (e) { return e.mint === _token && e.owner === _rwp; });
+                if (pe) {
+                  const diff = (pe.uiTokenAmount?.uiAmount ?? 0) - (pr?.uiTokenAmount?.uiAmount ?? 0);
+                  if (diff > 0) amountOut = diff;
+                }
+              }
+
+              // amountIn: SOL decrease minus tx fee = actual swap cost in SOL
+              let amountIn = null;
+              if (_rwp) {
+                const idx = keys.findIndex(function (k) {
+                  return (typeof k === 'string' ? k : k?.pubkey) === _rwp;
+                });
+                if (idx >= 0) {
+                  const lamports = (meta.preBalances[idx] ?? 0) - (meta.postBalances[idx] ?? 0) - (meta.fee ?? 0);
+                  if (lamports > 0) amountIn = lamports / 1e9;
+                }
+              }
+
+              if (amountOut != null || amountIn != null) {
+                try {
+                  window.postMessage({
+                    sr_bridge_to_ext: true,
+                    msg: { type: 'HISTORY_UPDATE', payload: { signature: _sig, amountIn: amountIn ?? null, amountOut: amountOut ?? null } },
+                  }, '*');
+                } catch (_) {}
+              }
+              return;
+            } catch (_) { /* retry */ }
+          }
+        })();
+      }
+      // Refresh Monitor tab so it shows idle state (not the confirm panel) after
+      // settlement. axiomConfirmPending is already false (cleared by axiomProceedTrade).
+      try { ns.renderWidgetPanel?.(); } catch (_) {}
     }
 
     console.log('[ZQ:AXIOM]', ev.type);
@@ -522,27 +595,29 @@
   })();
 
   // ── Buy button intercept ─────────────────────────────────────────────────
-  // Capture-phase click listener that catches Axiom's "Buy" button before React
-  // processes it. Stores the button ref, shows the risk confirmation panel.
-  // On "Proceed", ns.axiomProceedTrade() sets _axiomBypassNext then re-clicks —
-  // our listener skips it and React's handlers execute the trade normally.
+  // Two-layer capture intercept: pointerdown + click.
+  // pointerdown fires before mousedown/click and before any React handler.
+  // Calling preventDefault() on pointerdown causes Chrome to suppress the
+  // subsequent mousedown and click from the physical press, so Axiom's handler
+  // never fires regardless of which DOM event they listen to.
+  // btn.click() (programmatic — used by axiomProceedTrade) does NOT fire
+  // pointerdown, so the proceed path is unaffected.
   function _interceptBuyButton() {
-    document.addEventListener('click', function (e) {
-      if (_axiomBypassNext) { _axiomBypassNext = false; return; }
-      // Walk composed path to find a BUTTON element (handles shadow DOM / React portals).
+    // Helper — returns the Buy button from an event, or null.
+    function _buyBtn(e) {
       const path = e.composedPath ? e.composedPath() : [];
       const btn  = path.find(function (el) { return el && el.tagName === 'BUTTON'; })
                 ?? e.target?.closest?.('button');
-      if (!btn) return;
+      if (!btn) return null;
       const txt = (btn.textContent ?? '').trim().toLowerCase();
-      if (!txt.startsWith('buy ') && txt !== 'buy') return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
+      return (txt.startsWith('buy ') || txt === 'buy') ? btn : null;
+    }
+
+    function _showPanel(btn) {
       if (ns) {
         ns.axiomConfirmPending = true;
         ns.axiomPendingBtnRef  = btn;
       }
-      // Expand widget and switch to Monitor tab to show the confirm panel.
       const _w = document.getElementById('sr-widget');
       if (_w) {
         _w.style.display = '';
@@ -553,7 +628,31 @@
         if (ns) ns.widgetActiveTab = 'monitor';
       }
       try { ns?.renderWidgetPanel?.(); } catch (_) {}
-    }, true); // capture phase — fires before React's root event delegation
+    }
+
+    // Layer 1: pointerdown — earliest possible intercept point.
+    // preventDefault() here suppresses the browser-generated mousedown + click
+    // that would follow a physical press, blocking Axiom regardless of which
+    // event their React component listens to (onClick, onMouseDown, onPointerDown).
+    document.addEventListener('pointerdown', function (e) {
+      if (_axiomBypassNext) return; // proceed-path uses btn.click(), not pointerdown
+      const btn = _buyBtn(e);
+      if (!btn) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      _showPanel(btn);
+    }, true);
+
+    // Layer 2: click — handles keyboard Enter / programmatic clicks that skip
+    // the pointer event chain, and serves as the bypass path for axiomProceedTrade.
+    document.addEventListener('click', function (e) {
+      if (_axiomBypassNext) { _axiomBypassNext = false; return; }
+      const btn = _buyBtn(e);
+      if (!btn) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!ns?.axiomConfirmPending) _showPanel(btn); // avoid double-showing
+    }, true);
   }
 
   // ── Amount input watcher ─────────────────────────────────────────────────
@@ -565,6 +664,9 @@
   function _watchAmountInput() {
     let _debounce = null;
     function _rescore(solAmt) {
+      // Skip while the confirm panel is open — DOM changes from widget rendering
+      // would otherwise re-trigger _computeAxiomRisk unnecessarily.
+      if (ns?.axiomConfirmPending) return;
       _axiomBuyAmountSol = solAmt;
       const mint = ns?._tokenScoreMint;
       if (!mint) return;

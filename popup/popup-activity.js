@@ -273,7 +273,7 @@ function _buildTooltipHtml(h) {
     html += divider;
     html += `<div style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0;margin-bottom:8px">Axiom Trade Costs</div>`;
     if (p.priorityFeeSol != null) html += row('Priority fee', `${p.priorityFeeSol} SOL`, '#FFB547');
-    if (p.bribeFeeSol    != null) html += row('Bribe fee',    `${p.bribeFeeSol} SOL`,    p.bribeFeeSol > 0.001 ? '#FFB547' : 'var(--muted)');
+    if (p.bribeFeeSol    != null) html += row('Bribe fee',    `${p.bribeFeeSol} SOL`,    '#E8E8F0');
     html += row('MEV protection', p.mevProtection ? '\u2713 On' : '\u2717 Off', p.mevProtection ? '#14F195' : '#FFB547');
     if (p.enhancedMevProtection) html += row('Enhanced MEV', '\u2713 On', '#14F195');
     if (p.provider) html += row('Provider', escapeHtml(p.provider));
@@ -536,11 +536,14 @@ function _renderHistoryEntry(h, idx) {
     return `<div class="analysis-card" id="${id}" style="margin-bottom:8px;padding:8px;cursor:default;background:rgba(153,69,255,0.04);border-color:rgba(153,69,255,0.2)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
         <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_rlBadge}${_failBadge}</span>
+        ${h.amountOut != null ? `<span style="font-size:12px;font-weight:700;color:#14F195;font-family:'Space Mono',monospace">+ ${outVal}</span>` : ''}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:var(--fs-base);color:${_mevCol}">${_mevStr}</span>
-        ${_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : ''}
+        <span style="font-size:var(--fs-base);color:${_mevCol}">${_mevStr}${_msStr && h.amountIn == null ? ' \u00b7 ' + _msStr : ''}</span>
+        ${h.amountIn != null ? `<span style="font-size:12px;font-weight:700;color:var(--muted);font-family:'Space Mono',monospace">- ${inVal}</span>` : (_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : '')}
       </div>
+      ${_preset.bribeFeeSol != null ? `<div class="analysis-row"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="color:#E8E8F0;font-weight:700">${_preset.bribeFeeSol} SOL</span></div>` : ''}
+      ${h.riskLevel ? `<div class="analysis-row"><span class="lbl" title="ZendIQ token risk score \u2014 pre-fetched when you navigated to this token." style="cursor:help">Token Risk</span><span class="val" style="color:${_rlColor};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : ''}
       ${sandwichRowHtml}
       <div class="analysis-row" style="display:flex;justify-content:space-between;align-items:center">
         ${solscanLink ? `<div>${solscanLink}</div>` : '<div></div>'}

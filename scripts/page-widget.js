@@ -595,7 +595,7 @@
               const inVal  = _fmtW(h.amountIn,  h.tokenIn  || '?');
               const outVal = _fmtW(h.amountOut, h.tokenOut || '?');
               // Exchange label from swapType / routeSource
-              const exchLbl = h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType === 'rfq' ? 'RFQ · Jupiter' : h.swapType === 'gasless' ? 'Gasless · Jupiter' : 'Jupiter · AMM';
+              const exchLbl = h.source === 'axiom' ? 'Axiom.trade' : h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType === 'rfq' ? 'RFQ · Jupiter' : h.swapType === 'gasless' ? 'Gasless · Jupiter' : 'Jupiter · AMM';
               // Savings row
               let savRow = '';
               if (h.optimized) {
@@ -695,12 +695,50 @@
                     : 'No sandwich activity detected.';
                   // quoteAccuracy is always null on pump.fun (no pre-execution quote);
                   // use actualOutAmount as on-chain arrival indicator instead.
-                  if (h.quoteAccuracy == null && h.actualOutAmount == null) {
+                  if (h.quoteAccuracy == null && h.actualOutAmount == null && h.source !== 'axiom') {
                     sandwichRow = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Waiting for on-chain confirmation before finalising sandwich check.">Sandwich check</span><span style="color:#9B9BAD">pending\u2026</span></div>`;
                   } else {
                     sandwichRow = `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="${escapeHtml(_scanTip)}">Sandwich check</span><span style="color:#14F195;font-weight:700">Not sandwiched \u2705</span></div>`;
                   }
                 }
+              }
+              // ── Axiom.trade card ──────────────────────────────────────────
+              if (h.source === 'axiom') {
+                const _axRlClrs = { CRITICAL: '#FF4D4D', HIGH: '#FFB547', MEDIUM: '#9945FF', LOW: '#14F195' };
+                const _axRlClr  = _axRlClrs[h.riskLevel] ?? '#6B6B8A';
+                const _axToken  = escapeHtml(h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?'));
+                const _axFail   = (h.success === false) ? ` <span style="color:#FF4D4D;font-weight:700;font-size:12px">\u26a0 Failed</span>` : '';
+                const _axRlBadge = h.riskLevel
+                  ? ` <span style="font-size:11px;font-weight:700;background:${_axRlClr}22;border:1px solid ${_axRlClr}55;color:${_axRlClr};border-radius:10px;padding:1px 6px">${escapeHtml(h.riskLevel)}</span>` : '';
+                const _axPres   = h.axiomPreset ?? {};
+                const _axMevOn  = _axPres.mevProtection === true;
+                const _axMevStr = _axMevOn ? '\u{1F6E1} MEV On' : '\u26a1 MEV Off';
+                const _axMevClr = _axMevOn ? '#14F195' : '#FFB547';
+                const _axMsNum  = _axPres.timeTakenMs != null ? `${_axPres.timeTakenMs}ms` : '';
+                const _axOutFmt = h.amountOut != null ? '+ ' + _fmtW(h.amountOut, h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?')) : null;
+                const _axInFmt  = h.amountIn  != null ? '\u2212 ' + _fmtW(h.amountIn, 'SOL') : null;
+                const _axBribe  = (_axPres.bribeFeeSol != null && _axPres.bribeFeeSol > 0)
+                  ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="color:#E8E8F0;font-weight:700">${_axPres.bribeFeeSol} SOL</span></div>` : '';
+                const _axRisk   = h.riskLevel
+                  ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="ZendIQ token risk score — pre-fetched when you navigated to this token.">Token Risk</span><span style="color:${_axRlClr};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : '';
+                return `
+                  <div id="sr-wc-${i}" style="background:rgba(153,69,255,0.04);border:1px solid rgba(153,69,255,0.2);border-radius:8px;padding:10px;margin-bottom:6px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                      <span style="font-size:13px;font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_axToken}${_axRlBadge}${_axFail}</span>
+                      ${_axOutFmt ? `<span style="font-size:12px;font-weight:700;color:#14F195;font-family:'Space Mono',monospace;white-space:nowrap">${_axOutFmt}</span>` : ''}
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                      <span style="font-size:13px;color:${_axMevClr}">${_axMevStr}${_axMsNum && !_axInFmt ? ' \u00b7 ' + _axMsNum : ''}</span>
+                      ${_axInFmt ? `<span style="font-size:12px;font-weight:700;color:#9B9BAD;font-family:'Space Mono',monospace;white-space:nowrap">${_axInFmt}</span>` : (_axMsNum ? `<span style="font-size:13px;color:#9B9BAD">${_axMsNum}</span>` : '')}
+                    </div>
+                    ${_axBribe}
+                    ${_axRisk}
+                    ${sandwichRow}
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#9B9BAD">
+                      <div style="color:#14F195;">${solscanLink}</div>
+                      <div style="color:#9B9BAD;font-size:12px">${ago}</div>
+                    </div>
+                  </div>`;
               }
               // ── Failed trade card (tx sent but rejected on-chain) ──────────
               if (h.failed) {
@@ -2512,6 +2550,70 @@
                   })();
                 });
               }
+              // TEMP: Retroactively enrich old Axiom entries that are missing amountIn/Out.
+              // Fires once per signature on first widget load after this build is installed.
+              // Safe to remove once all local test entries have been enriched.
+              if (ns.rpcCall) {
+                ns._axiomRpcPending = ns._axiomRpcPending || new Set();
+                ns.recentSwaps.forEach(p => {
+                  if (p.source !== 'axiom') return;
+                  if (p.amountIn != null && p.amountOut != null) return; // already complete
+                  if (!p.signature) return;
+                  if (ns._axiomRpcPending.has(p.signature)) return;
+                  ns._axiomRpcPending.add(p.signature);
+                  const _sig = p.signature;
+                  const _token = p.outputMint ?? null;
+                  const _wp    = ns.axiomSessionPubkey ?? ns.resolveWalletPubkey?.() ?? null;
+                  (async () => {
+                    try {
+                      for (let attempt = 0; attempt < 6; attempt++) {
+                        if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+                        try {
+                          const res = await ns.rpcCall('getTransaction', [
+                            _sig,
+                            { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+                          ]);
+                          const tx = res?.result;
+                          if (!tx?.meta) continue;
+                          const meta = tx.meta;
+                          if (meta.err != null) return;
+                          const msg  = tx.transaction?.message ?? {};
+                          const keys = msg.staticAccountKeys ?? msg.accountKeys ?? [];
+                          const rwp = _wp ?? (keys.length > 0
+                            ? (typeof keys[0] === 'string' ? keys[0] : (keys[0]?.pubkey ?? null)) : null);
+                          let amountOut = null;
+                          if (_token && rwp) {
+                            const post = meta.postTokenBalances ?? [];
+                            const pre  = meta.preTokenBalances  ?? [];
+                            const pe = post.find(e => e.mint === _token && e.owner === rwp);
+                            const pr = pre.find(e  => e.mint === _token && e.owner === rwp);
+                            if (pe) {
+                              const diff = (pe.uiTokenAmount?.uiAmount ?? 0) - (pr?.uiTokenAmount?.uiAmount ?? 0);
+                              if (diff > 0) amountOut = diff;
+                            }
+                          }
+                          let amountIn = p.amountIn ?? null;
+                          if (amountIn == null && rwp) {
+                            const idx = keys.findIndex(k => (typeof k === 'string' ? k : k?.pubkey) === rwp);
+                            if (idx >= 0) {
+                              const lam = (meta.preBalances[idx] ?? 0) - (meta.postBalances[idx] ?? 0) - (meta.fee ?? 0);
+                              if (lam > 0) amountIn = lam / 1e9;
+                            }
+                          }
+                          if (amountOut != null || amountIn != null) {
+                            window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: {
+                              signature: _sig,
+                              amountIn:  amountIn  ?? null,
+                              amountOut: amountOut ?? null,
+                            }}}, '*');
+                          }
+                          return;
+                        } catch (_) { /* retry */ }
+                      }
+                    } finally { ns._axiomRpcPending.delete(_sig); }
+                  })();
+                });
+              }
             }
             // If a single-history update arrives for an optimized entry that has no
             // on-chain quoteAccuracy yet, fetch it from the RPC here (page context
@@ -2569,7 +2671,7 @@
               const fmt = v => (v == null || !isFinite(v)) ? '—' : (Math.abs(v) > 0 && Math.abs(v) < 0.0001) ? '< $0.0001' : '$' + (Math.abs(v) < 0.01 ? Math.abs(v).toFixed(4) : Math.abs(v).toFixed(3));
               const fmtA = (val, sym) => { if (val == null) return '— '+(sym||''); const n=parseFloat(val); if (!isFinite(n)) return String(val)+' '+(sym||''); const abs=Math.abs(n); const p=abs>=1000?2:abs>=1?4:abs>=0.001?6:8; const [ip,dp]=n.toFixed(p).split('.'); return ip.replace(/\B(?=(\d{3})+(?!\d))/g,'.')+(dp?','+dp:'')+' '+(sym||''); };
               const fmtAgo = ts => { const s=Math.round((Date.now()-(ts||0))/1000); return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; };
-              const exchLbl = h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType==='rfq'?'RFQ · Jupiter':h.swapType==='gasless'?'Gasless · Jupiter':'Jupiter · AMM';
+              const exchLbl = h.source === 'axiom' ? 'Axiom.trade' : h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType==='rfq'?'RFQ · Jupiter':h.swapType==='gasless'?'Gasless · Jupiter':'Jupiter · AMM';
               const sol = h.solPriceUsd != null ? Number(h.solPriceUsd) : null;
               const _solFb = (sol != null && isFinite(sol)) ? sol : 80; // $80 fallback for non-SOL pairs
               const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -2869,7 +2971,7 @@
                 }
               }
 
-              const exchLbl = h.routeSource === 'pump.fun' ? (h.jitoBundle ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? (h.jitoBundle ? 'Raydium \u00b7 AMM + Jito' : 'Raydium \u00b7 AMM') : h.swapType === 'rfq' ? 'RFQ \u00b7 Jupiter' : h.swapType === 'gasless' ? 'Gasless \u00b7 Jupiter' : 'Jupiter \u00b7 AMM';
+              const exchLbl = h.source === 'axiom' ? 'Axiom.trade' : h.routeSource === 'pump.fun' ? (h.jitoBundle ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? (h.jitoBundle ? 'Raydium \u00b7 AMM + Jito' : 'Raydium \u00b7 AMM') : h.swapType === 'rfq' ? 'RFQ \u00b7 Jupiter' : h.swapType === 'gasless' ? 'Gasless \u00b7 Jupiter' : 'Jupiter \u00b7 AMM';
               const inFmt  = fmtHistAmt(h.amountIn)  + '\u00a0' + escapeHtml(h.tokenIn  || '?');
               const outFmt = fmtHistAmt(h.amountOut) + '\u00a0' + escapeHtml(h.tokenOut || '?');
 
@@ -2965,7 +3067,7 @@
           const fmt = v => (v == null || !isFinite(v)) ? '—' : (Math.abs(v) > 0 && Math.abs(v) < 0.0001) ? '< $0.0001' : '$' + (Math.abs(v) < 0.01 ? Math.abs(v).toFixed(4) : Math.abs(v).toFixed(3));
           const fmtA = (val, sym) => { if (val == null) return '— '+(sym||''); const n=parseFloat(val); if (!isFinite(n)) return String(val)+' '+(sym||''); const abs=Math.abs(n); const p=abs>=1000?2:abs>=1?4:abs>=0.001?6:8; const [ip,dp]=n.toFixed(p).split('.'); return ip.replace(/\B(?=(\d{3})+(?!\d))/g,'.')+(dp?','+dp:'')+' '+(sym||''); };
           const fmtAgo = ts => { const s=Math.round((Date.now()-(ts||0))/1000); return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; };
-          const exchLbl = h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType==='rfq'?'RFQ · Jupiter':h.swapType==='gasless'?'Gasless · Jupiter':'Jupiter · AMM';
+          const exchLbl = h.source === 'axiom' ? 'Axiom.trade' : h.routeSource === 'pump.fun' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'pump.fun + Jito Bundle' : 'pump.fun') : h.routeSource === 'raydium' ? ((h.jitoBundle || h.jitoTipLamports > 0) ? 'Raydium · AMM + Jito Bundle' : 'Raydium · AMM') : h.swapType==='rfq'?'RFQ · Jupiter':h.swapType==='gasless'?'Gasless · Jupiter':'Jupiter · AMM';
           const sol = h.solPriceUsd != null ? Number(h.solPriceUsd) : null;
           const _solFb = (sol != null && isFinite(sol)) ? sol : 80; // $80 fallback for non-SOL pairs
           const SOL_MINT = 'So11111111111111111111111111111111111111112';

@@ -273,7 +273,15 @@ function _buildTooltipHtml(h) {
     html += divider;
     html += `<div style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0;margin-bottom:8px">Axiom Trade Costs</div>`;
     if (p.priorityFeeSol != null) html += row('Priority fee', `${p.priorityFeeSol} SOL`, '#FFB547');
-    if (p.bribeFeeSol    != null) html += row('Bribe fee',    `${p.bribeFeeSol} SOL`,    '#E8E8F0');
+    const _axBribePct = (p.bribeFeeSol != null && h.amountIn > 0)
+      ? Math.round(p.bribeFeeSol / h.amountIn * 100) : null;
+    const _axBribePctClr = _axBribePct != null ? (_axBribePct > 50 ? '#FF4D4D' : _axBribePct > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
+    const _axIsDefault   = p.mevProtection === false && !p.enhancedMevProtection
+      && p.slippage != null && p.slippage >= 18 && p.slippage <= 22;
+    if (p.bribeFeeSol != null) {
+      const _bribePctStr = _axBribePct != null ? ` <span style="color:${_axBribePctClr};font-size:var(--fs-xs)">(${_axBribePct}% of trade)</span>` : '';
+      html += `<div class="analysis-row" style="align-items:center"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr};font-weight:700">${escapeHtml(String(p.bribeFeeSol))} SOL${_bribePctStr}</span>${_axIsDefault ? '<span style="font-size:var(--fs-xs);color:var(--muted);margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>' : ''}</span></div>`;
+    }
     html += row('MEV protection', p.mevProtection ? '\u2713 On' : '\u2717 Off', p.mevProtection ? '#14F195' : '#FFB547');
     if (p.enhancedMevProtection) html += row('Enhanced MEV', '\u2713 On', '#14F195');
     if (p.provider) html += row('Provider', escapeHtml(p.provider));
@@ -492,7 +500,10 @@ function _renderHistoryEntry(h, idx) {
   if ('sandwichResult' in h && !_isRFQH) {
     const _sr = h.sandwichResult;
     if (_sr === null) {
-      sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Scanning surrounding block transactions for sandwich attacks. Updates automatically." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">pending\u2026</span></div>`;
+      const _swTooOld = h.timestamp && (Date.now() - h.timestamp) > 120_000;
+      sandwichRowHtml = _swTooOld
+        ? `<div class="analysis-row"><span class="lbl" title="Sandwich detection did not complete \u2014 block data unavailable or token not identified at capture time." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">N/A</span></div>`
+        : `<div class="analysis-row"><span class="lbl" title="Scanning surrounding block transactions for sandwich attacks. Updates automatically." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">pending\u2026</span></div>`;
     } else if (_sr?.skipped === 'tx_failed') {
       sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Transaction failed on-chain \u2014 no tokens were transferred, so sandwich detection does not apply." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">N/A \u00b7 tx failed</span></div>`;
     } else if (_sr?.error) {
@@ -512,7 +523,8 @@ function _renderHistoryEntry(h, idx) {
         : 'No sandwich activity detected.';
       // quoteAccuracy is always null on pump.fun (no pre-execution quote);
       // use actualOutAmount as on-chain arrival indicator instead.
-      if (h.quoteAccuracy == null && h.actualOutAmount == null) {
+      // Axiom uses amountOut (not actualOutAmount/quoteAccuracy) — exempt it.
+      if (h.quoteAccuracy == null && h.actualOutAmount == null && h.source !== 'axiom') {
         sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="Waiting for on-chain confirmation before finalising sandwich check." style="cursor:help">Sandwich check</span><span class="val" style="color:var(--muted)">pending\u2026</span></div>`;
       } else {
         sandwichRowHtml = `<div class="analysis-row"><span class="lbl" title="${escapeHtml(_scanTip)}" style="cursor:help">Sandwich check</span><span class="val" style="color:var(--green);font-weight:700">Not sandwiched \u2705</span></div>`;
@@ -528,26 +540,32 @@ function _renderHistoryEntry(h, idx) {
     const _failBadge = (h.success === false)
       ? ` <span style="color:#FF4D4D;font-weight:700">\u26a0 Failed</span>` : '';
     const _rlBadge = h.riskLevel
-      ? ` <span style="font-size:var(--fs-xs);font-weight:700;background:${_rlColor}22;border:1px solid ${_rlColor}55;color:${_rlColor};border-radius:10px;padding:1px 6px">${escapeHtml(h.riskLevel)}</span>` : '';
+      ? ` <span style="font-size:var(--fs-xs);font-weight:700;background:${_rlColor}22;border:1px solid ${_rlColor}55;color:${_rlColor};border-radius:10px;padding:1px 6px;vertical-align:middle">${escapeHtml(h.riskLevel)}</span>` : '';
     const _preset  = h.axiomPreset ?? {};
-    const _mevStr  = _preset.mevProtection ? '\u{1F6E1} MEV On' : '\u26a1 MEV Off';
+    const _mevStr  = _preset.mevProtection ? 'MEV On' : 'MEV Off';
     const _mevCol  = _preset.mevProtection ? '#14F195' : '#FFB547';
     const _msStr   = _preset.timeTakenMs != null ? `${_preset.timeTakenMs}ms` : '';
+    const _axBribePct2 = (_preset.bribeFeeSol != null && h.amountIn > 0)
+      ? Math.round(_preset.bribeFeeSol / h.amountIn * 100) : null;
+    const _axBribePctClr2 = _axBribePct2 != null ? (_axBribePct2 > 50 ? '#FF4D4D' : _axBribePct2 > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
+    const _axIsDefault2   = _preset.mevProtection === false && !_preset.enhancedMevProtection
+      && _preset.slippage != null && _preset.slippage >= 18 && _preset.slippage <= 22;
+    const _bribePctStr2 = _axBribePct2 != null ? ` <span style="color:${_axBribePctClr2};font-size:var(--fs-xs)">(${_axBribePct2}% of trade)</span>` : '';
     return `<div class="analysis-card" id="${id}" style="margin-bottom:8px;padding:8px;cursor:default;background:rgba(153,69,255,0.04);border-color:rgba(153,69,255,0.2)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-        <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_rlBadge}${_failBadge}</span>
-        ${h.amountOut != null ? `<span style="font-size:12px;font-weight:700;color:#14F195;font-family:'Space Mono',monospace">+ ${outVal}</span>` : ''}
+        <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_failBadge}</span>
+        ${h.amountOut != null ? `<span style="font-size:var(--fs-sm);font-weight:700;color:#14F195;font-family:'Space Mono',monospace">+ ${outVal}</span>` : ''}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:var(--fs-base);color:${_mevCol}">${_mevStr}${_msStr && h.amountIn == null ? ' \u00b7 ' + _msStr : ''}</span>
-        ${h.amountIn != null ? `<span style="font-size:12px;font-weight:700;color:var(--muted);font-family:'Space Mono',monospace">- ${inVal}</span>` : (_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : '')}
+        <span style="font-size:var(--fs-base);color:${_mevCol}">${_rlBadge}${_rlBadge ? ' ' : ''}${_mevStr}${_msStr && h.amountIn == null ? ' \u00b7 ' + _msStr : ''}</span>
+        ${h.amountIn != null ? `<span style="font-size:var(--fs-sm);font-weight:700;color:var(--muted);font-family:'Space Mono',monospace">- ${inVal}</span>` : (_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : '')}
       </div>
-      ${_preset.bribeFeeSol != null ? `<div class="analysis-row"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="color:#E8E8F0;font-weight:700">${_preset.bribeFeeSol} SOL</span></div>` : ''}
+      ${_preset.bribeFeeSol != null ? `<div class="analysis-row" style="align-items:center"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr2};font-weight:700">${_preset.bribeFeeSol} SOL${_bribePctStr2}</span>${_axIsDefault2 ? '<span style="font-size:var(--fs-xs);color:var(--muted);margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>' : ''}</span></div>` : ''}
       ${h.riskLevel ? `<div class="analysis-row"><span class="lbl" title="ZendIQ token risk score \u2014 pre-fetched when you navigated to this token." style="cursor:help">Token Risk</span><span class="val" style="color:${_rlColor};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : ''}
       ${sandwichRowHtml}
       <div class="analysis-row" style="display:flex;justify-content:space-between;align-items:center">
         ${solscanLink ? `<div>${solscanLink}</div>` : '<div></div>'}
-        <div style="color:var(--muted);font-size:12px">${ago}</div>
+        <div style="color:var(--muted);font-size:var(--fs-sm)">${ago}</div>
       </div>
     </div>`;
   }

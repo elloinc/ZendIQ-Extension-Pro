@@ -8,6 +8,13 @@
   'use strict';
   const ns = window.__zq;
 
+  // ── Font-size scale — mirrors popup.html CSS variables ────────────────────
+  const _FS_XS   = '11px';   // tiny pills, captions, sub-labels
+  const _FS_SM   = '12px';   // timestamps, secondary labels
+  const _FS_BASE = '13px';   // body text, descriptions
+  const _FS_MD   = '14px';   // primary UI text, setting rows
+  const _FS_LG   = '15px';   // brand name, prominent headings
+
   // HTML-escape helper for safe innerHTML rendering of storage-derived values
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -709,34 +716,39 @@
                 const _axToken  = escapeHtml(h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?'));
                 const _axFail   = (h.success === false) ? ` <span style="color:#FF4D4D;font-weight:700;font-size:12px">\u26a0 Failed</span>` : '';
                 const _axRlBadge = h.riskLevel
-                  ? ` <span style="font-size:11px;font-weight:700;background:${_axRlClr}22;border:1px solid ${_axRlClr}55;color:${_axRlClr};border-radius:10px;padding:1px 6px">${escapeHtml(h.riskLevel)}</span>` : '';
+                  ? `<span style="font-size:${_FS_XS};font-weight:700;background:${_axRlClr}22;border:1px solid ${_axRlClr}55;color:${_axRlClr};border-radius:10px;padding:1px 6px;vertical-align:middle">${escapeHtml(h.riskLevel)}</span>` : '';
                 const _axPres   = h.axiomPreset ?? {};
                 const _axMevOn  = _axPres.mevProtection === true;
-                const _axMevStr = _axMevOn ? '\u{1F6E1} MEV On' : '\u26a1 MEV Off';
+                const _axMevStr = _axMevOn ? 'MEV On' : 'MEV Off';
                 const _axMevClr = _axMevOn ? '#14F195' : '#FFB547';
                 const _axMsNum  = _axPres.timeTakenMs != null ? `${_axPres.timeTakenMs}ms` : '';
                 const _axOutFmt = h.amountOut != null ? '+ ' + _fmtW(h.amountOut, h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?')) : null;
                 const _axInFmt  = h.amountIn  != null ? '\u2212 ' + _fmtW(h.amountIn, 'SOL') : null;
+                const _axBribePct = (_axPres.bribeFeeSol != null && h.amountIn > 0)
+                  ? Math.round(_axPres.bribeFeeSol / h.amountIn * 100) : null;
+                const _axBribePctClr = _axBribePct != null ? (_axBribePct > 50 ? '#FF4D4D' : _axBribePct > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
+                const _axIsDefault  = _axPres.mevProtection === false && !_axPres.enhancedMevProtection
+                  && _axPres.slippage != null && _axPres.slippage >= 18 && _axPres.slippage <= 22;
                 const _axBribe  = (_axPres.bribeFeeSol != null && _axPres.bribeFeeSol > 0)
-                  ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="color:#E8E8F0;font-weight:700">${_axPres.bribeFeeSol} SOL</span></div>` : '';
+                  ? `<div style="display:flex;justify-content:space-between;align-items:center;font-size:${_FS_BASE};margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr};font-weight:700">${_axPres.bribeFeeSol} SOL${_axBribePct != null ? ` <span style="color:${_axBribePctClr};font-size:${_FS_XS}">(${_axBribePct}% of trade)</span>` : ''}</span>${_axIsDefault ? `<span style="font-size:${_FS_XS};color:#6B6B8A;margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>` : ''}</span></div>` : '';
                 const _axRisk   = h.riskLevel
-                  ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="ZendIQ token risk score — pre-fetched when you navigated to this token.">Token Risk</span><span style="color:${_axRlClr};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : '';
+                  ? `<div style="display:flex;justify-content:space-between;font-size:${_FS_BASE};margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="ZendIQ token risk score — pre-fetched when you navigated to this token.">Token Risk</span><span style="color:${_axRlClr};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : '';
                 return `
                   <div id="sr-wc-${i}" style="background:rgba(153,69,255,0.04);border:1px solid rgba(153,69,255,0.2);border-radius:8px;padding:10px;margin-bottom:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                      <span style="font-size:13px;font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_axToken}${_axRlBadge}${_axFail}</span>
-                      ${_axOutFmt ? `<span style="font-size:12px;font-weight:700;color:#14F195;font-family:'Space Mono',monospace;white-space:nowrap">${_axOutFmt}</span>` : ''}
+                      <span style="font-size:${_FS_BASE};font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_axToken}${_axFail}</span>
+                      ${_axOutFmt ? `<span style="font-size:${_FS_SM};font-weight:700;color:#14F195;font-family:'Space Mono',monospace;white-space:nowrap">${_axOutFmt}</span>` : ''}
                     </div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                      <span style="font-size:13px;color:${_axMevClr}">${_axMevStr}${_axMsNum && !_axInFmt ? ' \u00b7 ' + _axMsNum : ''}</span>
-                      ${_axInFmt ? `<span style="font-size:12px;font-weight:700;color:#9B9BAD;font-family:'Space Mono',monospace;white-space:nowrap">${_axInFmt}</span>` : (_axMsNum ? `<span style="font-size:13px;color:#9B9BAD">${_axMsNum}</span>` : '')}
+                      <span style="font-size:${_FS_BASE};color:${_axMevClr}">${_axRlBadge}${_axRlBadge ? ' ' : ''}${_axMevStr}${_axMsNum && !_axInFmt ? ' \u00b7 ' + _axMsNum : ''}</span>
+                      ${_axInFmt ? `<span style="font-size:${_FS_SM};font-weight:700;color:#9B9BAD;font-family:'Space Mono',monospace;white-space:nowrap">${_axInFmt}</span>` : (_axMsNum ? `<span style="font-size:${_FS_BASE};color:#9B9BAD">${_axMsNum}</span>` : '')}
                     </div>
                     ${_axBribe}
                     ${_axRisk}
                     ${sandwichRow}
                     <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#9B9BAD">
                       <div style="color:#14F195;">${solscanLink}</div>
-                      <div style="color:#9B9BAD;font-size:12px">${ago}</div>
+                      <div style="color:#9B9BAD;font-size:${_FS_SM}">${ago}</div>
                     </div>
                   </div>`;
               }
@@ -1226,8 +1238,9 @@
           : (_outM ? `<div style="font-size:12px;color:#9B9BAD;text-align:center;padding:4px 0">Scanning token risk&hellip;</div>` : '');
         const _isPump = window.location.hostname.includes('pump.fun');
         const _isRdm  = window.location.hostname.includes('raydium');
-        const _dexName = _isPump ? 'pump.fun' : _isRdm ? 'Raydium' : 'jup.ag';
-        const _dexUrl  = _isPump ? 'https://pump.fun' : _isRdm ? 'https://raydium.io' : 'https://jup.ag';
+        const _isAxiom = window.location.hostname.includes('axiom.trade');
+        const _dexName = _isPump ? 'pump.fun' : _isRdm ? 'Raydium' : _isAxiom ? 'Axiom' : 'jup.ag';
+        const _dexUrl  = _isPump ? 'https://pump.fun' : _isRdm ? 'https://raydium.io' : _isAxiom ? 'https://axiom.trade' : 'https://jup.ag';
         const _dexLink = `<a href="${_dexUrl}" style="color:#9945FF;text-decoration:none">${_dexName}</a>`;
         const _idleHint = ns.walletHooked
           ? `Monitoring active.<br>Start a swap on ${_dexLink} to see ZendIQ\u2019s route check and risk analysis.`

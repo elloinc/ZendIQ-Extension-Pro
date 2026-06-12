@@ -726,13 +726,16 @@
                 const _axInFmt  = h.amountIn  != null ? '\u2212 ' + _fmtW(h.amountIn, 'SOL') : null;
                 const _axBribePct = (_axPres.bribeFeeSol != null && h.amountIn > 0)
                   ? Math.round(_axPres.bribeFeeSol / h.amountIn * 100) : null;
+                const _axRfTip = h.riskFactors?.length
+                  ? '\n\nToken Risk Signals:\n' + h.riskFactors.map(f => `\u2022 ${f.name}: ${f.severity}${f.detail ? ' \u2014 ' + f.detail : ''}`).join('\n')
+                  : '';
                 const _axBribePctClr = _axBribePct != null ? (_axBribePct > 50 ? '#FF4D4D' : _axBribePct > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
                 const _axIsDefault  = _axPres.mevProtection === false && !_axPres.enhancedMevProtection
                   && _axPres.slippage != null && _axPres.slippage >= 18 && _axPres.slippage <= 22;
                 const _axBribe  = (_axPres.bribeFeeSol != null && _axPres.bribeFeeSol > 0)
                   ? `<div style="display:flex;justify-content:space-between;align-items:center;font-size:${_FS_BASE};margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr};font-weight:700">${_axPres.bribeFeeSol} SOL${_axBribePct != null ? ` <span style="color:${_axBribePctClr};font-size:${_FS_XS}">(${_axBribePct}% of trade)</span>` : ''}</span>${_axIsDefault ? `<span style="font-size:${_FS_XS};color:#6B6B8A;margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>` : ''}</span></div>` : '';
                 const _axRisk   = h.riskLevel
-                  ? `<div style="display:flex;justify-content:space-between;font-size:${_FS_BASE};margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="ZendIQ token risk score — pre-fetched when you navigated to this token.">Token Risk</span><span style="color:${_axRlClr};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : '';
+                  ? `<div style="display:flex;justify-content:space-between;font-size:${_FS_BASE};margin-bottom:4px"><span style="color:#C2C2D4;cursor:help" title="${escapeHtml('ZendIQ token risk score \u2014 pre-fetched when you navigated to this token.' + _axRfTip)}">Token Risk</span><span style="color:${_axRlClr};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : '';
                 return `
                   <div id="sr-wc-${i}" style="background:rgba(153,69,255,0.04);border:1px solid rgba(153,69,255,0.2);border-radius:8px;padding:10px;margin-bottom:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -3048,8 +3051,10 @@
           const sub = (l,v,c) => `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:#C2C2D4">${l}</span><span style="color:${c??'#B0B0C0'}">${v}</span></div>`;
           const divider = `<div style="border-top:1px solid rgba(153,69,255,0.2);margin:8px 0"></div>`;
           let t = `<div style="font-size:13px;font-weight:700;color:#E8E8F0;margin-bottom:8px;border-bottom:1px solid rgba(153,69,255,0.25);padding-bottom:6px">Trade Breakdown</div>`;
-          t += row(`<span title="The token you received back into your wallet after the swap completed." style="cursor:help">Received</span>`, escapeHtml(fmtA(h.amountOut, h.tokenOut||'?')), '#14F195');
-          t += row(`<span title="The token you sold — sent to the DEX to execute this swap." style="cursor:help">Paid (sold)</span>`, escapeHtml(fmtA(h.amountIn, h.tokenIn||'?')), '#E8E8F0');
+          const _tipTokOut = h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '…' : '?');
+          const _tipTokIn  = h.tokenIn  || (h.inputMint  ? h.inputMint.slice(0, 8)  + '…' : '?');
+          t += row(`<span title="The token you received back into your wallet after the swap completed." style="cursor:help">Received</span>`, escapeHtml(fmtA(h.amountOut, _tipTokOut)), '#14F195');
+          t += row(`<span title="The token you sold — sent to the DEX to execute this swap." style="cursor:help">Paid (sold)</span>`, escapeHtml(fmtA(h.amountIn, _tipTokIn)), '#E8E8F0');
           t += row(`<span title="How Jupiter routed your swap." style="cursor:help">Via</span>`, escapeHtml(exchLbl));
           t += row(`<span title="When this transaction was broadcast to the Solana network." style="cursor:help">When</span>`, fmtAgo(h.timestamp));
           if (h.routePlan && Array.isArray(h.routePlan) && h.routePlan.length) {
@@ -3070,8 +3075,14 @@
           }
           t += divider;
           t += `<div style="font-size:13px;font-weight:700;color:#E8E8F0;margin-bottom:8px">Performance Analysis</div>`;
-          t += row(`<span title="ZendIQ's composite risk score (0–100)." style="cursor:help">Risk Score</span>`, h.riskScore != null ? `${escapeHtml(String(h.riskScore))}/100 ${escapeHtml(h.riskLevel??'')}` : '—', h.riskScore != null ? rlc : '#C2C2D4');
-          t += row(`<span title="Estimated dollar value extractable by bots." style="cursor:help">Est. Bot Attack Exposure</span>`, mevUsd != null ? fmt(mevUsd) : '—', mevUsd != null ? (mevUsd > 0.0001 ? '#FFB547' : '#14F195') : '#C2C2D4');
+          const _tipRiskLbl = h.source === 'axiom' ? 'Token Risk Score' : 'Risk Score';
+          const _tipRiskTip = h.source === 'axiom'
+            ? 'ZendIQ token risk score — pre-fetched when you navigated to this token on Axiom. Based on on-chain data, RugCheck, DexScreener, and GeckoTerminal (12 signals).'
+            : 'ZendIQ\'s composite Bot Attack Risk score (0–100).';
+          t += row(`<span title="${_tipRiskTip}" style="cursor:help">${_tipRiskLbl}</span>`, h.riskScore != null ? `${escapeHtml(String(h.riskScore))}/100 ${escapeHtml(h.riskLevel??'')}` : '—', h.riskScore != null ? rlc : '#C2C2D4');
+          if (h.source !== 'axiom') {
+            t += row(`<span title="Estimated dollar value extractable by bots." style="cursor:help">Est. Bot Attack Exposure</span>`, mevUsd != null ? fmt(mevUsd) : '—', mevUsd != null ? (mevUsd > 0.0001 ? '#FFB547' : '#14F195') : '#C2C2D4');
+          }
           if ('sandwichResult' in h && h.swapType !== 'rfq' && h.swapType !== 'gasless') {
             const _sr2 = h.sandwichResult;
             if (_sr2 === null) {
@@ -3093,15 +3104,42 @@
             }
           }
           if (ns.widgetMode !== 'simple') {
+            const _isAxiomT = h.source === 'axiom';
             const sfc = {CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'};
-            t += `<div style="margin:8px 0 4px;font-size:9px;font-weight:700;color:#C2C2D4;text-transform:uppercase;letter-spacing:0.4px">Risk Factors</div>`;
-            if (h.riskFactors?.length) t += h.riskFactors.map(f => `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:#C2C2D4">${escapeHtml(f.name??f)}</span><span style="color:${sfc[f.severity]??'#C2C2D4'};font-weight:600">${escapeHtml(f.severity??'')}</span></div>`).join('');
+            t += `<div style="margin:8px 0 4px;font-size:9px;font-weight:700;color:#C2C2D4;text-transform:uppercase;letter-spacing:0.4px">${_isAxiomT ? 'Token Risk Signals' : 'Risk Factors'}</div>`;
+            if (h.riskFactors?.length) t += h.riskFactors.map(f => {
+              const _fDetail = _isAxiomT && f.detail ? `<div style="font-size:9px;color:#6B6B8A;padding-left:0">${escapeHtml(f.detail)}</div>` : '';
+              return `<div style="margin-bottom:${_fDetail?'5':'2'}px;padding-left:10px"><div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#C2C2D4">${escapeHtml(f.name??f)}</span><span style="color:${sfc[f.severity]??'#C2C2D4'};font-weight:600">${escapeHtml(f.severity??'')}</span></div>${_fDetail}</div>`;
+            }).join('');
             else t += `<div style="padding-left:10px;color:#C2C2D4;font-size:12px">No risk factors recorded</div>`;
-            t += `<div style="margin:8px 0 4px;font-size:9px;font-weight:700;color:#C2C2D4;text-transform:uppercase;letter-spacing:0.4px">Bot Attack Risk</div>`;
-            if (h.mevFactors?.length) t += h.mevFactors.map(f => { const fc = sfc[f.score>=20?'CRITICAL':f.score>=10?'HIGH':f.score>=5?'MEDIUM':'LOW']??'#C2C2D4'; return `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:#C2C2D4">${escapeHtml(f.factor)}</span><span style="color:${fc};font-weight:600">${escapeHtml(String(f.score))}</span></div>`; }).join('');
-            else t += `<div style="padding-left:10px;color:#C2C2D4;font-size:12px">No bot risk detected</div>`;
+            if (!_isAxiomT) {
+              t += `<div style="margin:8px 0 4px;font-size:9px;font-weight:700;color:#C2C2D4;text-transform:uppercase;letter-spacing:0.4px">Bot Attack Risk</div>`;
+              if (h.mevFactors?.length) t += h.mevFactors.map(f => { const fc = sfc[f.score>=20?'CRITICAL':f.score>=10?'HIGH':f.score>=5?'MEDIUM':'LOW']??'#C2C2D4'; return `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:#C2C2D4">${escapeHtml(f.factor)}</span><span style="color:${fc};font-weight:600">${escapeHtml(String(f.score))}</span></div>`; }).join('');
+              else t += `<div style="padding-left:10px;color:#C2C2D4;font-size:12px">No bot risk detected</div>`;
+            }
           }
-          if (h.optimized) {
+          if (h.source === 'axiom') {
+            // ── Axiom footer: Trade Costs from preset ──────────────────────
+            const _axP = h.axiomPreset ?? {};
+            const _axBribePct = (_axP.bribeFeeSol != null && h.amountIn > 0)
+              ? Math.round(_axP.bribeFeeSol / h.amountIn * 100) : null;
+            const _axBribeClr = _axBribePct != null ? (_axBribePct > 50 ? '#FF4D4D' : _axBribePct > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
+            const _axIsDef = _axP.mevProtection === false && !_axP.enhancedMevProtection
+              && _axP.slippage != null && _axP.slippage >= 18 && _axP.slippage <= 22;
+            t += divider;
+            t += `<div style="font-size:12px;font-weight:700;color:#E8E8F0;margin-bottom:8px">Axiom Trade Costs</div>`;
+            if (_axP.priorityFeeSol != null) t += row('Priority fee', `${_axP.priorityFeeSol} SOL`, '#FFB547');
+            if (_axP.bribeFeeSol != null) {
+              const _bPctStr = _axBribePct != null ? ` <span style="color:${_axBribeClr};font-size:10px">(${_axBribePct}% of trade)</span>` : '';
+              t += `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:3px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribeClr};font-weight:600">${_axP.bribeFeeSol} SOL${_bPctStr}</span>${_axIsDef ? `<span style="font-size:10px;color:#9B9BAD;margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>` : ''}</span></div>`;
+            }
+            t += row('MEV protection', _axP.mevProtection ? '\u2713 On' : '\u2717 Off', _axP.mevProtection ? '#14F195' : '#FFB547');
+            if (_axP.enhancedMevProtection) t += row('Enhanced MEV', '\u2713 On', '#14F195');
+            if (_axP.provider) t += row('Provider', escapeHtml(_axP.provider));
+            if (_axP.timeTakenMs != null) t += row('Settlement', `${_axP.timeTakenMs}ms`);
+            if (_axP.slippage != null) t += row('Slippage tolerance', `${_axP.slippage}%`);
+            t += `<div style="margin-top:6px;font-size:10px;color:#9B9BAD">ZendIQ monitors Axiom trades post-settlement. Independent sandwich detection only \u2014 ZendIQ cannot route or re-execute Axiom trades.</div>`;
+          } else if (h.optimized) {
             // ── Savings & Costs (only for optimized trades — ZendIQ built this tx) ──
             const _mevMult2 = ((h.routeSource === 'raydium' || h.routeSource === 'pump.fun') && h.jitoBundle) ? 0.95 : 0.70;
             const _mevProt2 = h.snapMevProtectionUsd != null && h.snapMevProtectionUsd >= 0.0001

@@ -158,14 +158,16 @@ function _buildTooltipHtml(h) {
 
   // ── Section 1: Trade Summary ─────────────────────────────────────────────
   let html = `<div style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0;margin-bottom:8px;border-bottom:1px solid rgba(153,69,255,0.25);padding-bottom:6px">Trade Breakdown</div>`;
+  const _ttTokOut = h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '…' : '?');
+  const _ttTokIn  = h.tokenIn  || (h.inputMint  ? h.inputMint.slice(0, 8)  + '…' : '?');
   html += row(
     `<span title="The token you received back into your wallet after the swap completed." style="cursor:help">Received</span>`,
-    escapeHtml(_fmtAmt(h.amountOut, h.tokenOut || '?')),
+    escapeHtml(_fmtAmt(h.amountOut, _ttTokOut)),
     '#14F195'
   );
   html += row(
     `<span title="The token you sold — sent to the DEX to execute this swap." style="cursor:help">Paid (sold)</span>`,
-    escapeHtml(_fmtAmt(h.amountIn, h.tokenIn || '?')),
+    escapeHtml(_fmtAmt(h.amountIn, _ttTokIn)),
     '#E8E8F0'
   );
   html += row(
@@ -204,19 +206,25 @@ function _buildTooltipHtml(h) {
   html += divider;
   html += `<div style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0;margin-bottom:8px">Performance Analysis</div>`;
 
-  // Risk score — always shown
+  // Risk score — always shown; label differs for Axiom (token risk, not MEV risk)
+  const _popRiskLbl = h.source === 'axiom' ? 'Token Risk Score' : 'Risk Score';
+  const _popRiskTip = h.source === 'axiom'
+    ? 'ZendIQ token risk score — pre-fetched when you navigated to this token on Axiom. Based on on-chain data, RugCheck, DexScreener, and GeckoTerminal (12 signals).'
+    : 'ZendIQ\'s composite Bot Attack Risk score for this swap. Factors include trade size, token volatility, pool liquidity, and token metadata. Score 0–100: LOW &lt;25 | MEDIUM 25–49 | HIGH 50–74 | CRITICAL 75+.';
   html += row(
-    `<span title="ZendIQ's composite Bot Attack Risk score for this swap. Factors include trade size, token volatility, pool liquidity, and token metadata. Score 0–100: LOW &lt;25 | MEDIUM 25–49 | HIGH 50–74 | CRITICAL 75+." style="cursor:help">Risk Score</span>`,
+    `<span title="${_popRiskTip}" style="cursor:help">${_popRiskLbl}</span>`,
     h.riskScore != null ? `${escapeHtml(h.riskScore)}/100 ${escapeHtml(h.riskLevel ?? '')}` : '—',
     h.riskScore != null ? rlc : 'var(--muted)'
   );
 
-  // Est. Bot Attack Exposure — always shown
-  html += row(
-    `<span title="Estimated dollar value bots could have extracted from this swap via front-running or sandwich attacks on the original AMM route. ZendIQ eliminated this exposure${_isRFQFill ? ' by routing to a direct RFQ market-maker fill (zero mempool exposure).' : ' via Jito validator tips.'}" style="cursor:help">Est. Bot Attack Exposure</span>`,
-    mevUsd != null ? fmt(mevUsd) : '—',
-    mevUsd != null ? (mevUsd > 0.0001 ? '#FFB547' : '#14F195') : 'var(--muted)'
-  );
+  // Est. Bot Attack Exposure — suppressed for Axiom (ZendIQ didn't provide MEV protection here)
+  if (h.source !== 'axiom') {
+    html += row(
+      `<span title="Estimated dollar value bots could have extracted from this swap via front-running or sandwich attacks on the original AMM route. ZendIQ eliminated this exposure${_isRFQFill ? ' by routing to a direct RFQ market-maker fill (zero mempool exposure).' : ' via Jito validator tips.'}" style="cursor:help">Est. Bot Attack Exposure</span>`,
+      mevUsd != null ? fmt(mevUsd) : '—',
+      mevUsd != null ? (mevUsd > 0.0001 ? '#FFB547' : '#14F195') : 'var(--muted)'
+    );
+  }
 
   // Sandwich detection result — shown for all AMM trades (not RFQ/gasless)
   if ('sandwichResult' in h && h.swapType !== 'rfq' && h.swapType !== 'gasless') {
@@ -240,30 +248,36 @@ function _buildTooltipHtml(h) {
     }
   }
 
-  // Advanced mode: Risk Factors + Bot Attack Risk — always shown in advanced
+  // Risk Factors + Bot Attack Risk — Advanced mode only
   const isAdv = !document.body.classList.contains('mode-simple');
+  const _isAxiomP = h.source === 'axiom';
   if (isAdv) {
     const sfc = {CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'};
     const mfc = {CRITICAL:'#FF4D4D',HIGH:'#FFB547',MEDIUM:'#9945FF',LOW:'#14F195'};
-    // ── Section: Risk Factors (calculateRisk factors) ──
-    html += `<div style="margin:8px 0 4px;font-size:var(--fs-xs);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;cursor:help" title="Risk signals assessed by ZendIQ for this swap: price impact, slippage, trade size, and network conditions.">Risk Factors</div>`;
+    // ── Section: Risk Factors (calculateRisk / token score factors) ──
+    html += `<div style="margin:8px 0 4px;font-size:var(--fs-xs);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;cursor:help" title="${_isAxiomP ? 'Token risk signals from ZendIQ\'s 12-factor on-chain analysis.' : 'Risk signals assessed by ZendIQ for this swap: price impact, slippage, trade size, and network conditions.'}">\n      ${_isAxiomP ? 'Token Risk Signals' : 'Risk Factors'}\n    </div>`;
     if (h.riskFactors?.length) {
       html += h.riskFactors.map(f => {
         const fc = sfc[f.severity] ?? 'var(--muted)';
-        return `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:var(--muted)">${escapeHtml(f.name ?? f)}</span><span style="color:${fc};font-weight:600">${escapeHtml(f.severity ?? '')}</span></div>`;
+        const detailHtml = _isAxiomP && f.detail
+          ? `<div style="font-size:var(--fs-xs);color:var(--muted);padding-left:0;margin-top:1px">${escapeHtml(f.detail)}</div>`
+          : '';
+        return `<div style="margin-bottom:${detailHtml ? '5' : '2'}px;padding-left:10px"><div style="display:flex;justify-content:space-between;gap:12px"><span style="color:var(--muted)">${escapeHtml(f.name ?? f)}</span><span style="color:${fc};font-weight:600">${escapeHtml(f.severity ?? '')}</span></div>${detailHtml}</div>`;
       }).join('');
     } else {
       html += `<div style="padding-left:10px;color:var(--muted);font-size:var(--fs-base)">No risk factors recorded</div>`;
     }
-    // ── Section: Bot Attack Risk (MEV factors) ────────
-    html += `<div style="margin:8px 0 4px;font-size:var(--fs-xs);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;cursor:help" title="Individual bot-attack signals detected for this swap. Each factor contributes to the overall Bot Attack Risk score.">Bot Attack Risk</div>`;
-    if (h.mevFactors?.length) {
-      html += h.mevFactors.map(f => {
-        const fc = mfc[f.score >= 20 ? 'CRITICAL' : f.score >= 10 ? 'HIGH' : f.score >= 5 ? 'MEDIUM' : 'LOW'] ?? 'var(--muted)';
-        return `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:var(--muted)">${escapeHtml(f.factor)}</span><span style="color:${fc};font-weight:600">${escapeHtml(f.score)}</span></div>`;
-      }).join('');
-    } else {
-      html += `<div style="padding-left:10px;color:var(--muted);font-size:var(--fs-base)">No bot risk detected</div>`;
+    if (!_isAxiomP) {
+      // ── Section: Bot Attack Risk (MEV factors) ────────
+      html += `<div style="margin:8px 0 4px;font-size:var(--fs-xs);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;cursor:help" title="Individual bot-attack signals detected for this swap. Each factor contributes to the overall Bot Attack Risk score.">Bot Attack Risk</div>`;
+      if (h.mevFactors?.length) {
+        html += h.mevFactors.map(f => {
+          const fc = mfc[f.score >= 20 ? 'CRITICAL' : f.score >= 10 ? 'HIGH' : f.score >= 5 ? 'MEDIUM' : 'LOW'] ?? 'var(--muted)';
+          return `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:2px;padding-left:10px"><span style="color:var(--muted)">${escapeHtml(f.factor)}</span><span style="color:${fc};font-weight:600">${escapeHtml(f.score)}</span></div>`;
+        }).join('');
+      } else {
+        html += `<div style="padding-left:10px;color:var(--muted);font-size:var(--fs-base)">No bot risk detected</div>`;
+      }
     }
   }
 
@@ -548,6 +562,9 @@ function _renderHistoryEntry(h, idx) {
     const _axBribePct2 = (_preset.bribeFeeSol != null && h.amountIn > 0)
       ? Math.round(_preset.bribeFeeSol / h.amountIn * 100) : null;
     const _axBribePctClr2 = _axBribePct2 != null ? (_axBribePct2 > 50 ? '#FF4D4D' : _axBribePct2 > 25 ? '#FFB547' : '#E8E8F0') : '#E8E8F0';
+    const _rfTip = h.riskFactors?.length
+      ? '\n\nToken Risk Signals:\n' + h.riskFactors.map(f => `\u2022 ${f.name}: ${f.severity}${f.detail ? ' \u2014 ' + f.detail : ''}`).join('\n')
+      : '';
     const _axIsDefault2   = _preset.mevProtection === false && !_preset.enhancedMevProtection
       && _preset.slippage != null && _preset.slippage >= 18 && _preset.slippage <= 22;
     const _bribePctStr2 = _axBribePct2 != null ? ` <span style="color:${_axBribePctClr2};font-size:var(--fs-xs)">(${_axBribePct2}% of trade)</span>` : '';
@@ -561,7 +578,7 @@ function _renderHistoryEntry(h, idx) {
         ${h.amountIn != null ? `<span style="font-size:var(--fs-sm);font-weight:700;color:var(--muted);font-family:'Space Mono',monospace">- ${inVal}</span>` : (_msStr ? `<span style="font-size:var(--fs-base);color:var(--muted)">${_msStr}</span>` : '')}
       </div>
       ${_preset.bribeFeeSol != null ? `<div class="analysis-row" style="align-items:center"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr2};font-weight:700">${_preset.bribeFeeSol} SOL${_bribePctStr2}</span>${_axIsDefault2 ? '<span style="font-size:var(--fs-xs);color:var(--muted);margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>' : ''}</span></div>` : ''}
-      ${h.riskLevel ? `<div class="analysis-row"><span class="lbl" title="ZendIQ token risk score \u2014 pre-fetched when you navigated to this token." style="cursor:help">Token Risk</span><span class="val" style="color:${_rlColor};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : ''}
+      ${h.riskLevel ? `<div class="analysis-row"><span class="lbl" title="${escapeHtml('ZendIQ token risk score \u2014 pre-fetched when you navigated to this token.' + _rfTip)}" style="cursor:help">Token Risk</span><span class="val" style="color:${_rlColor};font-weight:700">${escapeHtml(h.riskLevel)}${h.riskScore != null ? ' \u00b7 ' + h.riskScore + '/100' : ''}</span></div>` : ''}
       ${sandwichRowHtml}
       <div class="analysis-row" style="display:flex;justify-content:space-between;align-items:center">
         ${solscanLink ? `<div>${solscanLink}</div>` : '<div></div>'}

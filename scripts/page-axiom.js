@@ -270,12 +270,15 @@
       // Cache slippage (decimal) and MEV mode for use in pre-trade risk computations.
       if (ev.slippage != null) ns.axiomLastSlippage = ev.slippage / 100;
       if (ev.mevProtection != null) ns.axiomLastMevMode = ev.mevProtection;
+      // Was this the trade we just optimized? Capture before restore clears the flag.
+      const _wasOptimized = ns.axiomOptimizing === true;
+      const _optDetail    = _wasOptimized ? (ns.axiomLastOptimization ?? null) : null;
       const _token = ns._tokenScoreMint || null;
       const _risk  = (ns.tokenScoreResult?.loaded) ? ns.tokenScoreResult : null;
       const _SOL   = 'So11111111111111111111111111111111111111112';
       const _entry = {
         source:      'axiom',
-        optimized:   false,
+        optimized:   _wasOptimized,
         signature:   ev.signature,
         success:     ev.success,
         timestamp:   Date.now(),
@@ -305,10 +308,15 @@
           timeTakenMs:           ev.timeTakenMs           ?? null,
         },
         sandwichResult: null,   // filled async below
+        // ZendIQ optimization breakdown (present only when this buy was optimized).
+        axiomOptimization: _optDetail,
       };
       try {
         window.postMessage({ sr_bridge_to_ext: true, msg: { type: 'HISTORY_UPDATE', payload: _entry } }, '*');
       } catch (_) {}
+
+      // Restore the user's original preset now that the optimized trade has settled.
+      if (_wasOptimized) { _restoreSettings('settled'); }
 
       // Sandwich detection — assumed buy direction (SOL→token) which is the common case.
       // For sells the direction is reversed; detection may miss but never false-positives.
@@ -435,6 +443,171 @@
     } catch (_) {}
     return null;
   }
+
+  // ── Preset optimization (snapshot → safe write → restore) ────────────────
+  // Axiom signs server-side (Turnkey) so ZendIQ cannot rebuild the tx. The only
+  // lever is to temporarily tighten the user's active buy preset (lower slippage,
+  // force MEV Secure) before the trade, then restore the original afterwards so
+  // the change is completely seamless. Endpoint + recipe verified live:
+  //   POST https://api.axiom.trade/update-settings  body {settings:<full object>}
+  //   requires an actual diff + bumped lastUpdatedAt; cookie auth (credentials:include).
+  const _SETTINGS_URL = 'https://api.axiom.trade/update-settings';
+
+  function _readSettings() {
+    try {
+      const raw = localStorage.getItem('settings');
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      return (obj && typeof obj === 'object') ? obj : null;
+    } catch (_) { return null; }
+  }
+
+  function _mevModeLabel(buy) {
+    if (!buy) return 'Off';
+    if (buy.enhancedMevProtection) return 'Secure';
+    if (buy.mevProtection) return 'Reduced';
+    return 'Off';
+  }
+
+  // Worst (highest) of a set of risk levels.
+  function _worstLevel(/* ...levels */) {
+    const order = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+    let worst = 'LOW';
+    for (let i = 0; i < arguments.length; i++) {
+      const lvl = arguments[i];
+      if (lvl && (order[lvl] ?? 0) > (order[worst] ?? 0)) worst = lvl;
+    }
+    return worst;
+  }
+
+  // Compute the proposed safe changes for the active buy preset.
+  // Returns null when settings are unreadable or there is nothing worth changing.
+  function _computeOptimization() {
+    if (!ns?.axiomOptimizeEnabled) return null;
+    const settings = _readSettings();
+    if (!settings) return null;
+    const key = settings.currentSolPresetKey;
+    const preset = settings?.solPresets?.[key]?.buy;
+    if (!preset) return null;
+
+    const slipFrom = parseFloat(preset.slippage);
+    if (isNaN(slipFrom) || slipFrom <= 0) return null;
+
+    // Target slippage from the worst of bot-attack and token risk.
+    const botLvl = ns.axiomMevRisk?.riskLevel ?? null;
+    const tkLvl  = (ns.tokenScoreResult?.loaded) ? (ns.tokenScoreResult.level ?? null) : null;
+    const worst  = _worstLevel(botLvl, tkLvl);
+    const slipTarget = worst === 'CRITICAL' ? 10 : worst === 'HIGH' ? 15 : 20;
+    const slipTo = Math.min(slipFrom, slipTarget); // only ever lower
+
+    const mevFrom = _mevModeLabel(preset);
+
+    const changes = [];
+    if (slipTo < slipFrom) changes.push({ label: 'Slippage', from: slipFrom + '%', to: slipTo + '%' });
+    if (mevFrom !== 'Secure') changes.push({ label: 'MEV protection', from: mevFrom, to: 'Secure' });
+    if (!changes.length) return null; // already safe — nothing to optimize
+
+    // Honest, conservative savings estimate (potential exposure removed).
+    const buyAmt = _readBuyAmountFromButton() ?? _axiomBuyAmountSol ?? 0;
+    const usd = buyAmt * _AXIOM_SOL_FALLBACK;
+    const slipSav = usd > 0 ? usd * ((slipFrom - slipTo) / 100) * 0.15 : 0; // 0.15 fill-rate, matches jup.ag math
+    const mevSav  = (mevFrom !== 'Secure' && ns.axiomMevRisk?.estimatedLossUSD > 0)
+      ? ns.axiomMevRisk.estimatedLossUSD * 0.95
+      : 0;
+    const estSavingsUsd = slipSav + mevSav;
+
+    return { settings, key, preset, slipFrom, slipTo, mevFrom, mevTo: 'Secure', changes, estSavingsUsd };
+  }
+
+  // POST a full settings object to Axiom; also mirror to localStorage so the
+  // app's in-memory state stays consistent. Returns true on HTTP 2xx.
+  async function _postSettings(s) {
+    try {
+      const res = await window.fetch(_SETTINGS_URL, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ settings: s }),
+      });
+      // Mirror to localStorage only on success, so the client never drifts
+      // ahead of what the server actually accepted.
+      if (res.ok) { try { localStorage.setItem('settings', JSON.stringify(s)); } catch (_) {} }
+      return res.ok;
+    } catch (_) { return false; }
+  }
+
+  // Restore the user's original preset. Idempotent — clears snapshot + flags.
+  async function _restoreSettings(reason) {
+    const snap = ns?.axiomSettingsSnapshot;
+    if (ns) {
+      ns.axiomSettingsSnapshot = null;
+      ns.axiomOptimizing = false;
+      if (ns._axiomRestoreTimer) { clearTimeout(ns._axiomRestoreTimer); ns._axiomRestoreTimer = null; }
+    }
+    if (!snap) return;
+    try {
+      const s = JSON.parse(snap);
+      s.lastUpdatedAt = Date.now(); // force a real diff so the write is accepted
+      await _postSettings(s);
+      console.log('[ZQ:AXIOM] settings restored (' + reason + ')');
+    } catch (_) {}
+  }
+
+  // Optimize & Buy: snapshot → write safe preset → re-fire Buy → schedule restore.
+  // Exposed as ns.axiomOptimizeTrade for the widget button. No auto-sign — the
+  // user still approves the buy through Axiom's own flow.
+  async function _applyOptimizationAndBuy() {
+    const opt = _computeOptimization();
+    if (!opt || !ns) { ns?.axiomProceedTrade?.(); return; }
+
+    // Snapshot the original (deep clone via the raw object we just read).
+    ns.axiomSettingsSnapshot = JSON.stringify(opt.settings);
+    ns.axiomLastOptimization = {
+      slipFrom: opt.slipFrom, slipTo: opt.slipTo,
+      mevFrom: opt.mevFrom, mevTo: opt.mevTo,
+      estSavingsUsd: opt.estSavingsUsd, changes: opt.changes,
+    };
+
+    // Build the modified settings from a fresh clone.
+    const s = JSON.parse(JSON.stringify(opt.settings));
+    const buy = s.solPresets[opt.key].buy;
+    buy.slippage = String(opt.slipTo);
+    buy.enhancedMevProtection = true;   // Secure
+    buy.mevProtection = false;          // Secure is the enhanced flag only
+    s.lastUpdatedAt = Date.now();
+
+    ns.axiomOptimizing = true;
+    const ok = await _postSettings(s);
+    if (!ok) {
+      // Write failed — abandon optimization, fall back to the plain trade.
+      ns.axiomOptimizing = false;
+      ns.axiomSettingsSnapshot = null;
+      ns.axiomLastOptimization = null;
+      ns.axiomProceedTrade?.();
+      return;
+    }
+
+    // Settings are safe server-side. Fire the original Buy click.
+    ns.axiomProceedTrade?.();
+
+    // Fallback restore if the settlement signal is missed (e.g. failed/cancelled).
+    ns._axiomRestoreTimer = setTimeout(function () { _restoreSettings('timeout'); }, 45000);
+  }
+
+  // Best-effort restore if the user closes the tab mid-trade — sendBeacon carries
+  // same-site cookies so the write still authenticates without awaiting a promise.
+  window.addEventListener('beforeunload', function () {
+    if (!ns?.axiomSettingsSnapshot) return;
+    try {
+      const s = JSON.parse(ns.axiomSettingsSnapshot);
+      s.lastUpdatedAt = Date.now();
+      const blob = new Blob([JSON.stringify({ settings: s })], { type: 'application/json' });
+      navigator.sendBeacon(_SETTINGS_URL, blob);
+      localStorage.setItem('settings', JSON.stringify(s));
+    } catch (_) {}
+  });
+
+  if (ns) ns.axiomOptimizeTrade = _applyOptimizationAndBuy;
 
   // Compute Execution Risk and Bot Attack Risk for the current axiom token.
   // Called after fetchTokenScore completes and whenever slippage/mint changes.
@@ -693,16 +866,34 @@
   // buy button text ("Buy TOKEN 買X.XX") for preset-button clicks via
   // MutationObserver, since preset buttons update React state without a native
   // input event on the amount field.
+  // Reads the actual SOL buy amount from Axiom's Buy button text (e.g.
+  // "Buy SYM 買0.001"). This is authoritative — it reflects exactly what the
+  // trade will execute, so it cannot be confused with the slippage input that
+  // the generic 'input' listener would otherwise pick up.
+  function _readBuyAmountFromButton() {
+    const btns = document.querySelectorAll('button');
+    for (let i = 0; i < btns.length; i++) {
+      const txt = btns[i].textContent ?? '';
+      const m = /[\u8CB7]([0-9]+(?:\.[0-9]+)?)/.exec(txt)        // 買X.XX
+             ?? /buy\s+\S+\s+([0-9]+(?:\.[0-9]+)?)/i.exec(txt);  // Buy SYM X.XX
+      if (m) { const v = parseFloat(m[1]); if (!isNaN(v) && v > 0) return v; }
+    }
+    return null;
+  }
+
   function _watchAmountInput() {
     let _debounce = null;
     function _rescore(solAmt) {
       // Skip while the confirm panel is open — DOM changes from widget rendering
       // would otherwise re-trigger _computeAxiomRisk unnecessarily.
       if (ns?.axiomConfirmPending) return;
-      _axiomBuyAmountSol = solAmt;
+      // Prefer the Buy button amount — the generic 'input' listener also fires
+      // for the slippage field, so never trust the raw input value alone.
+      const amt = _readBuyAmountFromButton() ?? solAmt;
+      _axiomBuyAmountSol = amt;
       const mint = ns?._tokenScoreMint;
       if (!mint) return;
-      const usd = solAmt * _AXIOM_SOL_FALLBACK;
+      const usd = amt * _AXIOM_SOL_FALLBACK;
       _computeAxiomRisk(mint, usd).catch(function () {});
     }
     // Typed input events.
@@ -925,18 +1116,52 @@
 
       // ── Footer: Proceed/Cancel (intercept) or Got-it (browse) ─────────────
       const _slipPct   = ((_readAxiomSlippage() ?? ns.axiomLastSlippage ?? 0.20) * 100).toFixed(1);
-      const _amtLabel  = _axiomBuyAmountSol
-        ? 'Trading <b>' + _axiomBuyAmountSol + ' SOL</b> at <b>' + _slipPct + '% slippage</b>'
+      const _buyAmt    = _readBuyAmountFromButton() ?? _axiomBuyAmountSol;
+      const _amtLabel  = _buyAmt
+        ? 'Trading <b>' + _buyAmt + ' SOL</b> at <b>' + _slipPct + '% slippage</b>'
         : 'Slippage tolerance: <b>' + _slipPct + '%</b>';
+
+      // Optimization breakdown — only while a buy is intercepted and there is
+      // something worth changing (lower slippage and/or MEV Secure).
+      const _opt = ns.axiomConfirmPending ? _computeOptimization() : null;
+      const _optCard = _opt ? (function () {
+        const _rows = _opt.changes.map(function (c) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">'
+            + '<span style="color:#C2C2D4">' + _esc(c.label) + '</span>'
+            + '<span style="font-family:Space Mono,monospace;font-weight:700">'
+            +   '<span style="color:#FF6B6B">' + _esc(c.from) + '</span>'
+            +   '<span style="color:#6B6B8A"> \u2192 </span>'
+            +   '<span style="color:#14F195">' + _esc(c.to) + '</span>'
+            + '</span></div>';
+        }).join('');
+        const _sav = _opt.estSavingsUsd > 0.0001
+          ? '~$' + _opt.estSavingsUsd.toFixed(_opt.estSavingsUsd < 1 ? 4 : 2)
+          : 'Lower exposure';
+        return '<div style="background:linear-gradient(135deg,rgba(20,241,149,0.08),rgba(20,241,149,0.03));border:1px solid rgba(20,241,149,0.35);border-radius:10px;padding:11px 13px;margin-bottom:10px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid rgba(20,241,149,0.18)">'
+          +   '<span style="color:#14F195;font-weight:700;font-size:13px">\ud83d\udee1 ZendIQ Optimization</span>'
+          +   '<span title="Estimated exposure removed by tighter slippage + MEV Secure. Not a guaranteed gain." style="color:#14F195;font-weight:700;font-size:12px;font-family:Space Mono,monospace;cursor:help">' + _sav + '</span>'
+          + '</div>'
+          + _rows
+          + '<div style="font-size:10.5px;color:#6B8B7A;line-height:1.5;margin-top:7px">Applied to your active buy preset for this trade only, then restored automatically.</div>'
+          + '</div>';
+      })() : '';
+
       const _footer = ns.axiomConfirmPending
         ? '<div style="font-size:12px;color:#C2C2D4;margin-bottom:8px;text-align:center">' + _amtLabel + '</div>'
-          + '<button id="sr-ax-proceed" style="width:100%;padding:10px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;margin-bottom:7px">\u2713 Proceed with trade</button>'
+          + _optCard
+          + (_opt
+              ? '<button id="sr-ax-optimize" style="width:100%;padding:11px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;margin-bottom:7px">Optimize &amp; Buy</button>'
+                + '<button id="sr-ax-proceed" style="width:100%;padding:9px;border:1px solid rgba(255,255,255,0.14);border-radius:8px;background:none;color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;margin-bottom:7px">Proceed without optimizing</button>'
+              : '<button id="sr-ax-proceed" style="width:100%;padding:10px;border:none;border-radius:8px;background:linear-gradient(135deg,#14F195,#0cc97a);color:#061a10;font-size:13px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif;margin-bottom:7px">\u2713 Proceed with trade</button>')
           + '<button id="sr-ax-cancel" style="width:100%;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:none;color:#C2C2D4;font-size:12px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif">\u2715 Cancel trade</button>'
         : ns.axiomRiskAcknowledged
           ? ''
           : '<button id="sr-ax-close" style="width:100%;padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.04);color:#C2C2D4;font-size:13px;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;transition:background 0.15s">\u2713 Got it \u2014 close</button>';
       const _disclaimer = ns.axiomConfirmPending
-        ? '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 10px;padding:0 2px">ZendIQ cannot re-route Axiom trades. Cancel and retry with lower slippage to reduce risk.</div>'
+        ? (_opt
+            ? '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 10px;padding:0 2px">ZendIQ tightens your preset for this trade only and restores your original settings the moment it settles.</div>'
+            : '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 10px;padding:0 2px">Your preset is already safe. ZendIQ cannot re-route Axiom trades \u2014 cancel and lower slippage manually to reduce risk further.</div>')
         : ns.axiomRiskAcknowledged
           ? ''
           : '<div style="font-size:11px;color:#4A4A6A;line-height:1.55;margin:0 0 12px;padding:0 2px">ZendIQ intercepts each buy to show this risk check.</div>';

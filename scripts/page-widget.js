@@ -718,9 +718,13 @@
                 const _axRlBadge = h.riskLevel
                   ? `<span style="font-size:${_FS_XS};font-weight:700;background:${_axRlClr}22;border:1px solid ${_axRlClr}55;color:${_axRlClr};border-radius:10px;padding:1px 6px;vertical-align:middle">${escapeHtml(h.riskLevel)}</span>` : '';
                 const _axPres   = h.axiomPreset ?? {};
+                const _axMevSecure = !!_axPres.enhancedMevProtection;
                 const _axMevOn  = _axPres.mevProtection === true;
-                const _axMevStr = _axMevOn ? 'MEV On' : 'MEV Off';
-                const _axMevClr = _axMevOn ? '#14F195' : '#FFB547';
+                const _axMevStr = _axMevSecure ? 'MEV Secure' : _axMevOn ? 'MEV On' : 'MEV Off';
+                const _axMevClr = (_axMevSecure || _axMevOn) ? '#14F195' : '#FFB547';
+                const _axOptBadge = h.optimized
+                  ? ` <span style="font-size:${_FS_XS};font-weight:700;background:linear-gradient(135deg,rgba(20,241,149,0.15),rgba(20,241,149,0.05));border:1px solid rgba(20,241,149,0.35);color:#14F195;border-radius:10px;padding:1px 6px;vertical-align:middle">ZendIQ Optimized</span>`
+                  : '';
                 const _axMsNum  = _axPres.timeTakenMs != null ? `${_axPres.timeTakenMs}ms` : '';
                 const _axOutFmt = h.amountOut != null ? '+ ' + _fmtW(h.amountOut, h.tokenOut || (h.outputMint ? h.outputMint.slice(0, 8) + '\u2026' : '?')) : null;
                 const _axInFmt  = h.amountIn  != null ? '\u2212 ' + _fmtW(h.amountIn, 'SOL') : null;
@@ -739,7 +743,7 @@
                 return `
                   <div id="sr-wc-${i}" style="background:rgba(153,69,255,0.04);border:1px solid rgba(153,69,255,0.2);border-radius:8px;padding:10px;margin-bottom:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                      <span style="font-size:${_FS_BASE};font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_axToken}${_axFail}</span>
+                      <span style="font-size:${_FS_BASE};font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_axToken}${_axOptBadge}${_axFail}</span>
                       ${_axOutFmt ? `<span style="font-size:${_FS_SM};font-weight:700;color:#14F195;font-family:'Space Mono',monospace;white-space:nowrap">${_axOutFmt}</span>` : ''}
                     </div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -2483,6 +2487,18 @@
         if (_el) { _el.classList.remove('expanded', 'alert'); savePillState(_el); }
       };
 
+      // Optimize & Buy — applies a safe preset (lower slippage + MEV Secure),
+      // re-fires the Buy, then restores the user's original settings after settlement.
+      const _axOptimize = bodyInner.querySelector('#sr-ax-optimize');
+      if (_axOptimize) _axOptimize.onclick = async () => {
+        _axOptimize.disabled = true;
+        _axOptimize.style.opacity = '0.7';
+        _axOptimize.textContent = '\u23f3 Applying safe settings\u2026';
+        try { await ns.axiomOptimizeTrade?.(); } catch (_) {}
+        const _el = document.getElementById('sr-widget');
+        if (_el) { _el.classList.remove('expanded', 'alert'); savePillState(_el); }
+      };
+
       const _axCancel = bodyInner.querySelector('#sr-ax-cancel');
       if (_axCancel) _axCancel.onclick = () => {
         ns.axiomConfirmPending = false;
@@ -3133,12 +3149,19 @@
               const _bPctStr = _axBribePct != null ? ` <span style="color:${_axBribeClr};font-size:10px">(${_axBribePct}% of trade)</span>` : '';
               t += `<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:3px"><span style="color:#C2C2D4;cursor:help" title="Axiom bribe fee paid to the block producer. ~0.010\u20130.011 SOL regardless of trade size.">Bribe fee</span><span style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribeClr};font-weight:600">${_axP.bribeFeeSol} SOL${_bPctStr}</span>${_axIsDef ? `<span style="font-size:10px;color:#9B9BAD;margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>` : ''}</span></div>`;
             }
-            t += row('MEV protection', _axP.mevProtection ? '\u2713 On' : '\u2717 Off', _axP.mevProtection ? '#14F195' : '#FFB547');
-            if (_axP.enhancedMevProtection) t += row('Enhanced MEV', '\u2713 On', '#14F195');
+            t += row('MEV protection', _axP.enhancedMevProtection ? '\u2713 Secure' : (_axP.mevProtection ? '\u2713 On' : '\u2717 Off'), (_axP.enhancedMevProtection || _axP.mevProtection) ? '#14F195' : '#FFB547');
             if (_axP.provider) t += row('Provider', escapeHtml(_axP.provider));
             if (_axP.timeTakenMs != null) t += row('Settlement', `${_axP.timeTakenMs}ms`);
             if (_axP.slippage != null) t += row('Slippage tolerance', `${_axP.slippage}%`);
-            t += `<div style="margin-top:6px;font-size:10px;color:#9B9BAD">ZendIQ monitors Axiom trades post-settlement. Independent sandwich detection only \u2014 ZendIQ cannot route or re-execute Axiom trades.</div>`;
+            if (h.optimized && h.axiomOptimization) {
+              const _aoW = h.axiomOptimization;
+              t += divider;
+              t += `<div style="font-size:12px;font-weight:700;color:#14F195;margin-bottom:6px">\ud83d\udee1 ZendIQ Optimization</div>`;
+              if (Array.isArray(_aoW.changes)) _aoW.changes.forEach(c => { t += row(escapeHtml(c.label), `${escapeHtml(String(c.from))} \u2192 ${escapeHtml(String(c.to))}`, '#14F195'); });
+              if (_aoW.estSavingsUsd > 0.0001) t += row('Est. exposure removed', `~$${_aoW.estSavingsUsd.toFixed(_aoW.estSavingsUsd < 1 ? 4 : 2)}`, '#14F195');
+              t += `<div style="margin-top:4px;font-size:10px;color:#9B9BAD">ZendIQ tightened your preset for this trade, then restored your original settings automatically.</div>`;
+            }
+            t += `<div style="margin-top:6px;font-size:10px;color:#9B9BAD">ZendIQ monitors Axiom trades post-settlement and can pre-apply a safer preset. It cannot route or re-execute Axiom trades.</div>`;
           } else if (h.optimized) {
             // ── Savings & Costs (only for optimized trades — ZendIQ built this tx) ──
             const _mevMult2 = ((h.routeSource === 'raydium' || h.routeSource === 'pump.fun') && h.jitoBundle) ? 0.95 : 0.70;

@@ -133,6 +133,12 @@
     axiomConfirmPending: false,    // true while buy-button intercept awaits user decision
     axiomPendingBtnRef:  null,     // DOM reference to the intercepted Buy button
     axiomRiskAcknowledged: false,  // true after user clicks "Got it"; cleared on token change or new buy
+    // ── Axiom preset-optimization (snapshot + restore) ───────────────────
+    axiomOptimizeEnabled: true,    // master flag for the Optimize & Buy flow
+    axiomSettingsSnapshot: null,   // JSON string of the user's original settings, restored after the optimized trade
+    axiomOptimizing:    false,     // true between applying safe settings and restoring the original
+    axiomLastOptimization: null,   // { slipFrom, slipTo, mevFrom, mevTo, estSavingsUsd, changes[] } — last applied breakdown
+    _axiomRestoreTimer: null,      // fallback setTimeout id that restores settings if no settlement signal arrives
 
     // ── Site adapter registry ────────────────────────────────────────────
     _siteAdapters: [],  // populated by page-pump.js, page-raydium.js, etc.

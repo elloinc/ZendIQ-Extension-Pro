@@ -296,11 +296,24 @@ function _buildTooltipHtml(h) {
       const _bribePctStr = _axBribePct != null ? ` <span style="color:${_axBribePctClr};font-size:var(--fs-xs)">(${_axBribePct}% of trade)</span>` : '';
       html += `<div class="analysis-row" style="align-items:center"><span class="lbl" title="Axiom bribe fee paid to the block producer. Observed to be ~0.010\u20130.011 SOL regardless of trade size." style="cursor:help">Bribe fee</span><span class="val" style="display:flex;flex-direction:column;align-items:flex-end"><span style="color:${_axBribePctClr};font-weight:700">${escapeHtml(String(p.bribeFeeSol))} SOL${_bribePctStr}</span>${_axIsDefault ? '<span style="font-size:var(--fs-xs);color:var(--muted);margin-top:1px">Axiom default preset \u00b7 MEV Off, 20% slippage</span>' : ''}</span></div>`;
     }
-    html += row('MEV protection', p.mevProtection ? '\u2713 On' : '\u2717 Off', p.mevProtection ? '#14F195' : '#FFB547');
-    if (p.enhancedMevProtection) html += row('Enhanced MEV', '\u2713 On', '#14F195');
+    if (p.enhancedMevProtection) {
+      html += row('MEV protection', '\u2713 Secure', '#14F195');
+    } else {
+      html += row('MEV protection', p.mevProtection ? '\u2713 On' : '\u2717 Off', p.mevProtection ? '#14F195' : '#FFB547');
+    }
     if (p.provider) html += row('Provider', escapeHtml(p.provider));
     if (p.timeTakenMs != null) html += row('Settlement', `${p.timeTakenMs}ms`);
-    html += `<div style="margin-top:6px;font-size:var(--fs-xs);color:var(--muted)">ZendIQ monitors Axiom trades post-settlement. Independent sandwich detection only \u2014 ZendIQ cannot route or re-execute Axiom trades.</div>`;
+    if (h.optimized && h.axiomOptimization) {
+      const _ao = h.axiomOptimization;
+      html += divider;
+      html += `<div style="font-size:var(--fs-base);font-weight:700;color:#14F195;margin-bottom:6px">\ud83d\udee1 ZendIQ Optimization</div>`;
+      if (Array.isArray(_ao.changes)) {
+        _ao.changes.forEach(c => { html += row(escapeHtml(c.label), `${escapeHtml(String(c.from))} \u2192 ${escapeHtml(String(c.to))}`, '#14F195'); });
+      }
+      if (_ao.estSavingsUsd > 0.0001) html += row('Est. exposure removed', `~$${_ao.estSavingsUsd.toFixed(_ao.estSavingsUsd < 1 ? 4 : 2)}`, '#14F195');
+      html += `<div style="margin-top:4px;font-size:var(--fs-xs);color:var(--muted)">ZendIQ tightened your preset for this trade, then restored your original settings automatically.</div>`;
+    }
+    html += `<div style="margin-top:6px;font-size:var(--fs-xs);color:var(--muted)">ZendIQ monitors Axiom trades post-settlement and can pre-apply a safer preset. It cannot route or re-execute Axiom trades.</div>`;
     return html;
   }
 
@@ -556,8 +569,12 @@ function _renderHistoryEntry(h, idx) {
     const _rlBadge = h.riskLevel
       ? ` <span style="font-size:var(--fs-xs);font-weight:700;background:${_rlColor}22;border:1px solid ${_rlColor}55;color:${_rlColor};border-radius:10px;padding:1px 6px;vertical-align:middle">${escapeHtml(h.riskLevel)}</span>` : '';
     const _preset  = h.axiomPreset ?? {};
-    const _mevStr  = _preset.mevProtection ? 'MEV On' : 'MEV Off';
-    const _mevCol  = _preset.mevProtection ? '#14F195' : '#FFB547';
+    const _mevSecure = !!_preset.enhancedMevProtection;
+    const _mevStr  = _mevSecure ? 'MEV Secure' : _preset.mevProtection ? 'MEV On' : 'MEV Off';
+    const _mevCol  = (_mevSecure || _preset.mevProtection) ? '#14F195' : '#FFB547';
+    const _optBadge = h.optimized
+      ? ` <span style="font-size:var(--fs-xs);font-weight:700;background:linear-gradient(135deg,rgba(20,241,149,0.15),rgba(20,241,149,0.05));border:1px solid rgba(20,241,149,0.35);color:#14F195;border-radius:10px;padding:1px 6px;vertical-align:middle">ZendIQ Optimized</span>`
+      : '';
     const _msStr   = _preset.timeTakenMs != null ? `${_preset.timeTakenMs}ms` : '';
     const _axBribePct2 = (_preset.bribeFeeSol != null && h.amountIn > 0)
       ? Math.round(_preset.bribeFeeSol / h.amountIn * 100) : null;
@@ -570,7 +587,7 @@ function _renderHistoryEntry(h, idx) {
     const _bribePctStr2 = _axBribePct2 != null ? ` <span style="color:${_axBribePctClr2};font-size:var(--fs-xs)">(${_axBribePct2}% of trade)</span>` : '';
     return `<div class="analysis-card" id="${id}" style="margin-bottom:8px;padding:8px;cursor:default;background:rgba(153,69,255,0.04);border-color:rgba(153,69,255,0.2)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-        <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_failBadge}</span>
+        <span style="font-size:var(--fs-base);font-weight:700;color:#E8E8F0">Axiom \u00b7 SOL \u2192 ${_tokenLbl}${_optBadge}${_failBadge}</span>
         ${h.amountOut != null ? `<span style="font-size:var(--fs-sm);font-weight:700;color:#14F195;font-family:'Space Mono',monospace">+ ${outVal}</span>` : ''}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">

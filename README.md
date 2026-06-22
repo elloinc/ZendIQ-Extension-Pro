@@ -4,7 +4,7 @@
 >
 > 🌐 [zendiq.ai](https://zendiq.ai)
 
-> **Status:** Live in development — Chrome Web Store release pending Pro beta (June 2026). **ZendIQ Lite** (the free edition) is already live on the Chrome Web Store: [Install ZendIQ Lite →](https://chromewebstore.google.com/detail/piacdmhfdpnddopdojdfkjbbbcpgpblf)
+> **Status:** Live on the Chrome Web Store — [Install ZendIQ Pro →](https://chromewebstore.google.com/detail/adnicpcaldagdfgncabogjbamhbnhjhe). **ZendIQ Lite** (the free edition) is also live: [Install ZendIQ Lite →](https://chromewebstore.google.com/detail/piacdmhfdpnddopdojdfkjbbbcpgpblf)
 
 ---
 
@@ -125,6 +125,10 @@ Fees flow through Jupiter's execution engine. ZendIQ never handles or custodies 
 
 ## Install
 
+### Chrome Web Store
+
+[**Install ZendIQ Pro →**](https://chromewebstore.google.com/detail/adnicpcaldagdfgncabogjbamhbnhjhe) — one-click install, automatic updates.
+
 ### Manual / Developer install
 
 1. Clone or download this repository
@@ -235,6 +239,6 @@ zendiq-pro/
 
 ZendIQ Pro is provided for informational and convenience purposes only. It is not financial advice. Savings estimates compare ZendIQ's optimised route against Jupiter's concurrent live quote at the moment you click **Sign & Send** — the original route is never executed, so the comparison is an estimate. Zero risk cannot be guaranteed after optimisation. No profit is guaranteed.
 
-The Lite edition has been reviewed and published on the Chrome Web Store. **ZendIQ never accesses private keys or seed phrases** — signing happens entirely inside your wallet; ZendIQ only requests the signed transaction bytes.
+Both the Pro and Lite editions have been reviewed and published on the Chrome Web Store. **ZendIQ never accesses private keys or seed phrases** — signing happens entirely inside your wallet; ZendIQ only requests the signed transaction bytes.
 
 Use at your own risk.
